@@ -1,0 +1,21 @@
+# Dépendances et sorties de build
+node_modules/
+dist/
+
+# Régénérés par les builds : `npm run vendor` (web) et `npm run build` (extension,
+# qui recopie les modules partagés de web/js et embarque l'app). Une seule
+# source, web/ : les copies ne se versionnent pas.
+web/vendor/
+extension/src/lib/
+extension/src/fonts/
+extension/src/icons/
+extension/src/app/
+
+# Captures laissées par les tests de bout en bout en cas d'échec
+/web/*.png
+/extension/*.png
+
+# Outillage local de l'assistant
+.dual-graph/
+.claude/
+CLAUDE.md

@@ -1,0 +1,344 @@
+<!doctype html>
+<html lang="fr">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>myMFA</title>
+  <link rel="stylesheet" href="popup.css">
+</head>
+<body>
+  <div class="popup">
+    <header class="top">
+      <svg class="logo" width="26" height="19" viewBox="0 0 30 22" fill="none" aria-hidden="true"><defs><linearGradient id="lg" x1="0" y1="0" x2="30" y2="22" gradientUnits="userSpaceOnUse"><stop offset="0" stop-color="#8AF5E0"/><stop offset="1" stop-color="#2BB3C0"/></linearGradient></defs><path d="M3 19V10.5a5.75 5.75 0 0 1 11.5 0V19M14.5 10.5a5.75 5.75 0 0 1 11.5 0V19" stroke="url(#lg)" stroke-width="4" stroke-linecap="round"/></svg>
+      <span class="brand">my<b>MFA</b></span>
+      <span class="spacer"></span>
+      <button type="button" class="icon-btn" id="btn-back" hidden data-i18n-attr="aria-label:ext.popup.back;title:ext.popup.back">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M15 6l-6 6 6 6"/></svg>
+      </button>
+      <button type="button" class="icon-btn" id="btn-scan" data-i18n-attr="aria-label:ext.popup.scanTab;title:ext.popup.scanTab">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 8V5a2 2 0 0 1 2-2h3M16 3h3a2 2 0 0 1 2 2v3M21 16v3a2 2 0 0 1-2 2h-3M8 21H5a2 2 0 0 1-2-2v-3M7 12h10"/></svg>
+      </button>
+      <button type="button" class="icon-btn" id="btn-lock" hidden data-i18n-attr="aria-label:lock.lockNow;title:lock.lockNow">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="4" y="10" width="16" height="11" rx="2.5"/><path d="M8 10V7a4 4 0 0 1 8 0v3"/></svg>
+      </button>
+      <button type="button" class="icon-btn" id="btn-settings" data-i18n-attr="aria-label:ext.popup.settings;title:ext.popup.settings">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 0 0 .3 1.8l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-1.8-.3 1.7 1.7 0 0 0-1 1.5V21a2 2 0 1 1-4 0v-.1a1.7 1.7 0 0 0-1.1-1.5 1.7 1.7 0 0 0-1.8.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.7 1.7 0 0 0 .3-1.8 1.7 1.7 0 0 0-1.5-1H3a2 2 0 1 1 0-4h.1a1.7 1.7 0 0 0 1.5-1.1 1.7 1.7 0 0 0-.3-1.8l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.7 1.7 0 0 0 1.8.3H9a1.7 1.7 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.1a1.7 1.7 0 0 0 1 1.5 1.7 1.7 0 0 0 1.8-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.7 1.7 0 0 0-.3 1.8V9a1.7 1.7 0 0 0 1.5 1H21a2 2 0 1 1 0 4h-.1a1.7 1.7 0 0 0-1.5 1z"/></svg>
+      </button>
+    </header>
+
+    <!-- Codes -->
+    <section class="view" data-view="main">
+      <div class="site" id="site">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="M3 12h18M12 3a14 14 0 0 1 0 18M12 3a14 14 0 0 0 0 18"/></svg>
+        <span class="site-host" id="site-host"></span>
+        <span class="site-count" id="site-count"></span>
+      </div>
+      <div class="tabs" role="tablist" id="tabs">
+        <button type="button" role="tab" data-tab="all" data-i18n="ext.popup.tabAll"></button>
+        <button type="button" role="tab" data-tab="codes" data-i18n="ext.popup.tabCodes"></button>
+        <button type="button" role="tab" data-tab="logins" data-i18n="ext.popup.tabLogins"></button>
+        <button type="button" role="tab" data-tab="passkeys" data-i18n="ext.popup.tabPasskeys"></button>
+      </div>
+      <p class="status-line" id="scan-status" role="status" hidden></p>
+      <div class="scroll" data-pane="all" hidden>
+        <div class="chips" role="group" data-i18n-attr="aria-label:ext.popup.filter">
+          <button type="button" class="chip" data-filter="all" aria-pressed="true" data-i18n="ext.popup.filterAll"></button>
+          <button type="button" class="chip" data-filter="fav" aria-pressed="false" data-i18n="ext.popup.filterFav"></button>
+          <select id="merged-order" class="order-select" data-i18n-attr="aria-label:ext.popup.order;title:ext.popup.order">
+            <option value="domain" data-i18n="ext.popup.orderDomain"></option>
+            <option value="recent" data-i18n="ext.popup.orderRecent"></option>
+            <option value="alpha" data-i18n="ext.popup.orderAlpha"></option>
+            <option value="tag" data-i18n="ext.popup.orderTag"></option>
+          </select>
+        </div>
+        <label class="search">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/></svg>
+          <input type="search" id="search-all" data-i18n-attr="placeholder:ext.popup.searchAll;aria-label:ext.popup.searchAll">
+        </label>
+        <ul class="list" id="merged-list"></ul>
+        <p class="empty" id="empty-merged" hidden></p>
+      </div>
+      <div class="scroll" data-pane="logins" hidden>
+        <div class="protect" id="protect" hidden>
+          <p data-i18n="ext.popup.protectText"></p>
+          <button type="button" class="btn btn-primary" id="btn-protect" data-i18n="ext.toast.createVault"></button>
+        </div>
+        <section id="site-logins-section" hidden>
+          <h2 class="section" data-i18n="ext.popup.forSite"></h2>
+          <ul class="list" id="site-logins"></ul>
+        </section>
+        <section>
+          <h2 class="section" data-i18n="ext.popup.allLogins"></h2>
+          <ul class="list" id="all-logins"></ul>
+          <p class="empty" id="empty-logins" hidden></p>
+        </section>
+      </div>
+      <div class="scroll" data-pane="passkeys" hidden>
+        <ul class="list" id="all-passkeys"></ul>
+        <p class="empty" id="empty-passkeys" hidden></p>
+      </div>
+      <div class="scroll" data-pane="codes">
+        <section id="site-section" hidden>
+          <h2 class="section" data-i18n="ext.popup.forSite"></h2>
+          <ul class="list" id="site-list"></ul>
+        </section>
+        <section>
+          <h2 class="section" data-i18n="ext.popup.allAccounts"></h2>
+          <label class="search">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/></svg>
+            <input type="search" id="search" data-i18n-attr="placeholder:ext.popup.search;aria-label:ext.popup.search">
+          </label>
+          <ul class="list" id="all-list"></ul>
+          <p class="empty" id="empty" hidden></p>
+        </section>
+      </div>
+    </section>
+
+    <!-- Déverrouillage -->
+    <section class="view view-center" data-view="unlock" hidden>
+      <form id="unlock-form" class="unlock">
+        <h1 data-i18n="lock.title"></h1>
+        <p class="muted" data-i18n="ext.popup.unlockText"></p>
+        <p class="pending-note" id="unlock-pending" hidden></p>
+        <input type="text" name="username" value="myMFA" autocomplete="username" hidden aria-hidden="true" tabindex="-1">
+        <label class="field">
+          <span data-i18n="lock.password"></span>
+          <input type="password" id="unlock-password" class="input" autocomplete="current-password" required>
+        </label>
+        <p class="error" id="unlock-error" role="alert" hidden></p>
+        <button type="submit" class="btn btn-primary" data-i18n="lock.unlock"></button>
+        <p class="muted small" data-i18n="ext.popup.passkeyNote"></p>
+      </form>
+    </section>
+
+    <!-- Premier mot de passe maître, choisi dans l'extension -->
+    <section class="view view-center" data-view="create" hidden>
+      <form id="create-form" class="unlock">
+        <h1 data-i18n="ext.popup.createTitle"></h1>
+        <p class="muted" data-i18n="ext.popup.createText"></p>
+        <p class="pending-note" id="create-pending" hidden></p>
+        <input type="text" name="username" value="myMFA" autocomplete="username" hidden aria-hidden="true" tabindex="-1">
+        <label class="field">
+          <span data-i18n="security.newPassword"></span>
+          <input type="password" id="create-password" class="input" autocomplete="new-password" required minlength="10">
+        </label>
+        <div class="meter" id="create-meter" hidden>
+          <span class="meter-bars" aria-hidden="true"><span></span><span></span><span></span><span></span></span>
+          <span class="meter-label"></span>
+        </div>
+        <label class="field">
+          <span data-i18n="security.confirmPassword"></span>
+          <input type="password" id="create-confirm" class="input" autocomplete="new-password" required minlength="10">
+        </label>
+        <p class="error" id="create-error" role="alert" hidden></p>
+        <button type="submit" class="btn btn-primary" data-i18n="ext.popup.createSubmit"></button>
+        <p class="muted small" data-i18n="security.passwordHint"></p>
+      </form>
+    </section>
+
+    <!-- Nouveau compte trouvé par « Scanner l'onglet » -->
+    <section class="view" data-view="add" hidden>
+      <form id="add-form" class="scroll add">
+        <h1 data-i18n="ext.card.newTitle"></h1>
+        <label class="field"><span data-i18n="field.issuer"></span><input name="issuer" class="input"></label>
+        <label class="field"><span data-i18n="field.account"></span><input name="account" class="input"></label>
+        <label class="field"><span data-i18n="field.tag"></span><input name="tag" class="input" list="tag-list" data-i18n-attr="placeholder:ext.popup.tagPlaceholder"></label>
+        <datalist id="tag-list"></datalist>
+        <label class="field"><span data-i18n="field.description"></span><input name="description" class="input" data-i18n-attr="placeholder:field.descriptionPlaceholder"></label>
+        <p class="error" id="add-error" role="alert" hidden></p>
+        <button type="submit" class="btn btn-primary" data-i18n="ext.card.add"></button>
+        <p class="muted small" data-i18n="ext.card.privacy"></p>
+      </form>
+    </section>
+
+    <!-- Modifier un mot de passe et / ou un compte 2FA -->
+    <section class="view" data-view="edit" hidden>
+      <form id="edit-form" class="scroll add" novalidate>
+        <h1 id="edit-title"></h1>
+        <fieldset class="edit-group" id="edit-login">
+          <legend class="section" data-i18n="credentials.password"></legend>
+          <label class="field"><span data-i18n="credentials.url"></span><input name="origin" class="input mono" spellcheck="false" inputmode="url" autocomplete="off"></label>
+          <label class="field"><span data-i18n="credentials.username"></span><input name="username" class="input" autocomplete="off"></label>
+          <div class="field">
+            <label for="edit-password" data-i18n="credentials.password"></label>
+            <div class="input-row">
+              <input id="edit-password" name="password" type="password" class="input mono" autocomplete="new-password" spellcheck="false">
+              <button type="button" class="icon-btn small" id="edit-reveal" data-i18n-attr="aria-label:credentials.show;title:credentials.show">
+                <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7S2 12 2 12z"/><circle cx="12" cy="12" r="3"/></svg>
+              </button>
+              <button type="button" class="icon-btn small" id="edit-generate" data-i18n-attr="aria-label:credentials.generate;title:credentials.generate">
+                <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M21 12a9 9 0 1 1-2.6-6.4M21 4v5h-5"/></svg>
+              </button>
+            </div>
+          </div>
+          <label class="field"><span data-i18n="credentials.titleField"></span><input name="title" class="input"></label>
+          <label class="field"><span data-i18n="ext.popup.note"></span><textarea name="note" class="input" rows="2"></textarea></label>
+        </fieldset>
+        <fieldset class="edit-group" id="edit-account">
+          <legend class="section" data-i18n="ext.popup.codeSection"></legend>
+          <label class="field"><span data-i18n="field.issuer"></span><input name="issuer" class="input"></label>
+          <label class="field"><span data-i18n="field.account"></span><input name="account" class="input"></label>
+          <label class="field"><span data-i18n="field.description"></span><input name="description" class="input"></label>
+        </fieldset>
+        <label class="field"><span data-i18n="field.tag"></span><input name="tag" class="input" list="tag-list" autocomplete="off" data-i18n-attr="placeholder:ext.popup.tagPlaceholder"></label>
+        <div class="panel">
+          <div class="row">
+            <span class="row-main" id="lbl-favorite" data-i18n="ext.popup.favorite"></span>
+            <button type="button" class="switch" role="switch" id="sw-favorite" aria-checked="false" aria-labelledby="lbl-favorite"><span></span></button>
+          </div>
+        </div>
+        <p class="error" id="edit-error" role="alert" hidden></p>
+        <button type="submit" class="btn btn-primary" data-i18n="ext.popup.saveEdit"></button>
+      </form>
+    </section>
+
+    <!-- Réglages -->
+    <section class="view" data-view="settings" hidden>
+      <div class="scroll">
+        <h1 data-i18n="ext.settings.title"></h1>
+        <h2 class="section" data-i18n="ext.settings.pages"></h2>
+        <div class="panel">
+          <div class="row">
+            <span class="row-main"><span id="lbl-detect" data-i18n="ext.settings.detect"></span><small data-i18n="ext.settings.detectHint"></small></span>
+            <button type="button" class="switch" role="switch" id="sw-detect" aria-labelledby="lbl-detect"><span></span></button>
+          </div>
+          <div class="row">
+            <span class="row-main"><span id="lbl-fill" data-i18n="ext.settings.fill"></span><small data-i18n="ext.settings.fillHint"></small></span>
+            <button type="button" class="switch" role="switch" id="sw-fill" aria-labelledby="lbl-fill"><span></span></button>
+          </div>
+        </div>
+
+        <h2 class="section" data-i18n="ext.settings.credentials"></h2>
+        <div class="panel">
+          <div class="row">
+            <span class="row-main"><span id="lbl-save" data-i18n="ext.settings.savePasswords"></span><small data-i18n="ext.settings.savePasswordsHint"></small></span>
+            <button type="button" class="switch" role="switch" id="sw-save" aria-labelledby="lbl-save"><span></span></button>
+          </div>
+          <div class="row">
+            <span class="row-main"><span id="lbl-generate" data-i18n="ext.settings.generate"></span><small data-i18n="ext.settings.generateHint"></small></span>
+            <button type="button" class="switch" role="switch" id="sw-generate" aria-labelledby="lbl-generate"><span></span></button>
+          </div>
+          <div class="row">
+            <span class="row-main"><span id="lbl-passkeys" data-i18n="ext.settings.passkeys"></span><small data-i18n="ext.settings.passkeysHint"></small></span>
+            <button type="button" class="switch" role="switch" id="sw-passkeys" aria-labelledby="lbl-passkeys"><span></span></button>
+          </div>
+        </div>
+        <div class="panel pad" id="never-panel" hidden>
+          <span class="field-title" data-i18n="ext.settings.neverSave"></span>
+          <ul class="never" id="never-list"></ul>
+        </div>
+
+        <h2 class="section" data-i18n="settings.data"></h2>
+        <div class="panel">
+          <button type="button" class="row row-link" id="btn-import">
+            <span class="row-main"><span data-i18n="ext.settings.import"></span><small data-i18n="ext.settings.importHint"></small></span>
+            <svg class="chevron" viewBox="0 0 24 24" aria-hidden="true"><path d="m9 6 6 6-6 6"/></svg>
+          </button>
+        </div>
+
+        <h2 class="section" data-i18n="ext.settings.app"></h2>
+        <div class="panel pad">
+          <label class="field">
+            <span data-i18n="ext.settings.appUrl"></span>
+            <input id="app-url" class="input mono" spellcheck="false" inputmode="url" placeholder="https://app.mymfa.mindlog.today">
+          </label>
+          <div class="sync">
+            <span class="dot" id="sync-dot"></span>
+            <span class="sync-text" id="sync-text"></span>
+            <button type="button" class="btn btn-ghost btn-sm" id="btn-sync" data-i18n="ext.settings.syncNow"></button>
+          </div>
+          <p class="muted small" data-i18n="ext.settings.appHint"></p>
+        </div>
+
+        <h2 class="section" data-i18n="ext.settings.drive"></h2>
+        <div class="panel pad">
+          <label class="field" id="drive-client-field" hidden>
+            <span data-i18n="ext.settings.driveClientId"></span>
+            <input id="drive-client-id" class="input mono" spellcheck="false" autocomplete="off" placeholder="123456789-abc.apps.googleusercontent.com">
+          </label>
+          <div class="sync">
+            <span class="dot" id="drive-dot"></span>
+            <span class="sync-text"><span id="drive-text"></span><small class="drive-next" id="drive-next" hidden></small></span>
+          </div>
+          <button type="button" class="btn btn-primary" id="btn-drive-sync" data-i18n="ext.settings.backupNow"></button>
+          <label class="row row-plain">
+            <span class="row-main" data-i18n="ext.settings.driveEvery"></span>
+            <select id="drive-every" class="row-select"></select>
+          </label>
+          <p class="muted small" data-i18n="ext.settings.driveHint"></p>
+          <p class="muted small" id="drive-redirect"></p>
+          <button type="button" class="btn btn-ghost btn-sm start" id="btn-drive-off" data-i18n="ext.settings.driveOff" hidden></button>
+        </div>
+
+        <h2 class="section" data-i18n="settings.appearance"></h2>
+        <div class="segmented" role="radiogroup" id="theme" data-i18n-attr="aria-label:theme.group">
+          <button type="button" role="radio" data-value="auto" data-i18n="theme.auto"></button>
+          <button type="button" role="radio" data-value="light" data-i18n="theme.light"></button>
+          <button type="button" role="radio" data-value="dark" data-i18n="theme.dark"></button>
+        </div>
+        <div class="panel">
+          <label class="row">
+            <span class="row-main" data-i18n="settings.language"></span>
+            <select id="lang" class="row-select"></select>
+          </label>
+          <label class="row">
+            <span class="row-main" data-i18n="security.autoLock"></span>
+            <select id="auto-lock" class="row-select"></select>
+          </label>
+        </div>
+        <p class="muted small privacy" data-i18n="ext.settings.privacy"></p>
+      </div>
+    </section>
+
+    <footer class="foot">
+      <span class="dot" id="foot-dot"></span>
+      <span class="foot-text" id="foot-text"></span>
+      <a href="#" id="open-app" data-i18n="ext.popup.openApp"></a>
+    </footer>
+    <div class="toast" id="toast" role="status" hidden></div>
+  </div>
+
+  <template id="tpl-login">
+    <li>
+      <div class="item">
+        <span class="tile"></span>
+        <span class="item-text"><span class="item-issuer"></span><span class="item-account"></span></span>
+        <button type="button" class="icon-btn small" data-action="copy-user">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="8" r="4"/><path d="M4 21a8 8 0 0 1 16 0"/></svg>
+        </button>
+        <button type="button" class="icon-btn small" data-action="copy-password">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M15 7a4 4 0 1 1-3.9 4.9L4 19v2h3v-2h2v-2h2l1.1-1.1A4 4 0 0 1 15 7z"/></svg>
+        </button>
+        <button type="button" class="btn-fill" data-action="fill-login" hidden>
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 12h12M12 6l6 6-6 6M20 5v14"/></svg>
+          <span data-i18n="ext.toast.fillShort"></span>
+        </button>
+        <button type="button" class="icon-btn small muted-btn" data-action="edit"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 20h4L19 9l-4-4L4 16zM14 6l4 4"/></svg></button>
+      </div>
+    </li>
+  </template>
+
+  <template id="tpl-row">
+    <li>
+      <div class="item">
+        <span class="tile"></span>
+        <span class="item-text"><span class="item-issuer"></span><span class="item-account"></span></span>
+        <button type="button" class="item-code" data-action="copy"></button>
+        <button type="button" class="icon-btn small" data-action="fill" hidden>
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 12h12M12 6l6 6-6 6M20 5v14"/></svg>
+        </button>
+        <button type="button" class="icon-btn small muted-btn" data-action="edit"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 20h4L19 9l-4-4L4 16zM14 6l4 4"/></svg></button>
+      </div>
+    </li>
+  </template>
+
+  <script src="lib/i18n.js"></script>
+  <script src="lib/locales/fr.js"></script>
+  <script src="lib/locales/en.js"></script>
+  <script src="lib/otp.js"></script>
+  <script src="lib/store.js"></script>
+  <script src="lib/vault.js"></script>
+  <script src="lib/passgen.js"></script>
+  <script src="popup.js"></script>
+</body>
+</html>

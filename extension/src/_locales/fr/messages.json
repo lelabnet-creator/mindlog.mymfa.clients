@@ -1,0 +1,4 @@
+{
+  "extName": { "message": "myMFA" },
+  "extDescription": { "message": "Codes 2FA, mots de passe et passkeys sur les pages web, avec l’app myMFA complète intégrée : rien d’autre à installer." }
+}

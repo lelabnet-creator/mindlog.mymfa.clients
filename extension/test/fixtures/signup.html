@@ -1,0 +1,25 @@
+<!doctype html>
+<html lang="fr">
+<head><meta charset="utf-8"><link rel="icon" href="data:,"><title>Inscription — page de test</title></head>
+<body style="font-family: system-ui, sans-serif; padding: 40px;">
+  <h1>Créer un compte</h1>
+  <!-- Pas d'autocomplete : l'inscription se reconnaît à la paire mot de passe / confirmation. -->
+  <form id="signup">
+    <p><label>Pseudo<br><input id="user" name="user" type="text"></label>
+      <small>3 à 30 caractères</small></p>
+    <div class="field">
+      <p><label>Mot de passe<br><input id="password" name="password" type="password" maxlength="16"></label></p>
+      <p class="help">Entre 10 et 16 caractères, avec une majuscule et un chiffre. Pas de caractères spéciaux.</p>
+    </div>
+    <p><label>Confirmation<br><input id="confirm" name="confirm" type="password"></label></p>
+    <p><button type="submit">Créer mon compte</button></p>
+  </form>
+  <script>
+    document.getElementById('signup').addEventListener('submit', (event) => {
+      event.preventDefault();
+      if (document.getElementById('password').value !== document.getElementById('confirm').value) return;
+      location.href = 'login-ok.html';
+    });
+  </script>
+</body>
+</html>

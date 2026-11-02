@@ -1,0 +1,17 @@
+{
+  "name": "mymfa-extension",
+  "version": "0.4.0",
+  "private": true,
+  "description": "Extension Chromium de myMFA, autonome : l'app complète embarquée, codes, mots de passe et passkeys des sites",
+  "scripts": {
+    "build": "node scripts/build.mjs",
+    "test": "node --test 'test/*.test.js'",
+    "test:e2e": "npm run build && node test/e2e/app.e2e.mjs && node test/e2e/extension.e2e.mjs && node test/e2e/credentials.e2e.mjs"
+  },
+  "devDependencies": {
+    "@fontsource-variable/manrope": "^5.3.0",
+    "jsqr": "^1.4.0",
+    "playwright-core": "^1.64.1",
+    "pngjs": "^5.0.0"
+  }
+}

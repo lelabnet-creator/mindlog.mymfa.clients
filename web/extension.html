@@ -1,0 +1,89 @@
+<!doctype html>
+<html lang="fr">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="theme-color" content="#070B13">
+  <title>myMFA — extension navigateur</title>
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 30 30'%3E%3Crect width='30' height='30' rx='8' fill='%23070B13'/%3E%3Cpath d='M5 23V14.5a5 5 0 0 1 10 0V23M15 14.5a5 5 0 0 1 10 0V23' fill='none' stroke='%235EE6CF' stroke-width='3.4' stroke-linecap='round'/%3E%3C/svg%3E">
+  <script src="js/boot-theme.js"></script>
+  <link rel="stylesheet" href="css/style.css">
+</head>
+<body>
+  <div class="install">
+    <nav class="install-nav">
+      <a class="brand" href="./">
+        <svg class="logo" width="32" height="23" viewBox="0 0 30 22" fill="none" aria-hidden="true"><defs><linearGradient id="logo-grad-inst" x1="0" y1="0" x2="30" y2="22" gradientUnits="userSpaceOnUse"><stop offset="0" stop-color="#8AF5E0"/><stop offset="1" stop-color="#2BB3C0"/></linearGradient></defs><path d="M3 19V10.5a5.75 5.75 0 0 1 11.5 0V19M14.5 10.5a5.75 5.75 0 0 1 11.5 0V19" stroke="url(#logo-grad-inst)" stroke-width="4" stroke-linecap="round"/></svg>
+        <span class="brand-name">my<b>MFA</b></span>
+      </a>
+      <a class="btn btn-ghost btn-sm" href="./#/settings">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M15 6l-6 6 6 6"/></svg>
+        <span data-i18n="install.back"></span>
+      </a>
+    </nav>
+
+    <header class="install-hero">
+      <span class="section-label accent" data-i18n="install.eyebrow"></span>
+      <h1 data-i18n="install.title"></h1>
+      <p class="install-lead" data-i18n="install.lead"></p>
+      <div class="install-cta">
+        <a class="btn btn-primary btn-lg" href="dist/mymfa-extension.zip" download>
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3v12M7 10l5 5 5-5M5 21h14"/></svg>
+          <span data-i18n="install.download"></span>
+        </a>
+        <a class="btn btn-ghost btn-lg" href="#steps" data-i18n="install.seeSteps"></a>
+      </div>
+      <p class="muted small" data-i18n="install.compat"></p>
+    </header>
+
+    <section class="install-features" data-i18n-attr="aria-label:install.featuresLabel">
+      <article class="panel">
+        <span class="row-icon accent" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M3 8V5a2 2 0 0 1 2-2h3M16 3h3a2 2 0 0 1 2 2v3M21 16v3a2 2 0 0 1-2 2h-3M8 21H5a2 2 0 0 1-2-2v-3"/><rect x="8" y="8" width="3" height="3"/><rect x="13" y="13" width="3" height="3"/></svg></span>
+        <h2 data-i18n="install.f1Title"></h2>
+        <p data-i18n="install.f1Text"></p>
+      </article>
+      <article class="panel">
+        <span class="row-icon accent" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M4 12h12M12 6l6 6-6 6M20 5v14"/></svg></span>
+        <h2 data-i18n="install.f2Title"></h2>
+        <p data-i18n="install.f2Text"></p>
+      </article>
+      <article class="panel">
+        <span class="row-icon accent" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M12 3 4 6v6c0 4.5 3.4 8.3 8 9 4.6-.7 8-4.5 8-9V6z"/></svg></span>
+        <h2 data-i18n="install.f3Title"></h2>
+        <p data-i18n="install.f3Text"></p>
+      </article>
+    </section>
+
+    <section id="steps" class="install-section" aria-labelledby="steps-title">
+      <h2 id="steps-title" data-i18n="install.stepsTitle"></h2>
+      <p class="muted" data-i18n="install.stepsLead"></p>
+      <ol class="install-steps">
+        <li class="panel"><span class="step-n">1</span><h3 data-i18n="install.s1Title"></h3><p data-i18n="install.s1Text"></p></li>
+        <li class="panel"><span class="step-n">2</span><h3 data-i18n="install.s2Title"></h3><p data-i18n="install.s2Text"></p><code>chrome://extensions</code></li>
+        <li class="panel"><span class="step-n">3</span><h3 data-i18n="install.s3Title"></h3><p data-i18n="install.s3Text"></p></li>
+        <li class="panel"><span class="step-n">4</span><h3 data-i18n="install.s4Title"></h3><p data-i18n="install.s4Text"></p><code id="app-origin"></code></li>
+      </ol>
+    </section>
+
+    <section class="install-section" aria-labelledby="perm-title">
+      <h2 id="perm-title" data-i18n="install.permTitle"></h2>
+      <p class="muted" data-i18n="install.permLead"></p>
+      <ul class="panel install-perms">
+        <li><strong data-i18n="install.p1Name"></strong><span data-i18n="install.p1Why"></span></li>
+        <li><strong data-i18n="install.p2Name"></strong><span data-i18n="install.p2Why"></span></li>
+        <li><strong data-i18n="install.p3Name"></strong><span data-i18n="install.p3Why"></span></li>
+        <li><strong data-i18n="install.p4Name"></strong><span data-i18n="install.p4Why"></span></li>
+      </ul>
+    </section>
+  </div>
+
+  <script src="js/i18n.js"></script>
+  <script src="js/locales/fr.js"></script>
+  <script src="js/locales/en.js"></script>
+  <script>
+    I18n.init();
+    I18n.apply(document);
+    document.getElementById('app-origin').textContent = location.origin;
+  </script>
+</body>
+</html>

@@ -1,0 +1,52 @@
+<!doctype html>
+<html lang="fr">
+<head><meta charset="utf-8"><link rel="icon" href="data:,"><title>Passkeys — page de test</title></head>
+<body style="font-family: system-ui, sans-serif; padding: 40px;">
+  <h1>Passkeys</h1>
+  <p><button id="register" type="button">Créer une passkey</button>
+  <button id="login" type="button">Se connecter avec une passkey</button></p>
+  <p><input id="username" autocomplete="username webauthn" placeholder="Identifiant"></p>
+  <pre id="out"></pre>
+  <script>
+    // Le « serveur » de test : challenges aléatoires, réponses gardées pour vérification par le test.
+    const random = (n) => crypto.getRandomValues(new Uint8Array(n));
+    const show = (label, value) => (document.getElementById('out').textContent = `${label} ${JSON.stringify(value)}`);
+    window.results = {};
+
+    document.getElementById('register').addEventListener('click', async () => {
+      const challenge = random(32);
+      try {
+        const cred = await navigator.credentials.create({
+          publicKey: {
+            rp: { name: 'Site de test' },
+            user: { id: new TextEncoder().encode('user-42'), name: 'alice@test', displayName: 'Alice' },
+            challenge,
+            pubKeyCredParams: [{ type: 'public-key', alg: -7 }, { type: 'public-key', alg: -257 }],
+            authenticatorSelection: { residentKey: 'required', userVerification: 'preferred' },
+            extensions: { credProps: true },
+          },
+        });
+        window.results.created = { json: cred.toJSON(), isCredential: cred instanceof PublicKeyCredential, challenge: Array.from(challenge), ext: cred.getClientExtensionResults() };
+        show('créée', cred.id);
+      } catch (err) {
+        window.results.createError = err.name;
+        show('erreur', err.name);
+      }
+    });
+
+    async function login(mediation) {
+      const challenge = random(32);
+      try {
+        const cred = await navigator.credentials.get({ mediation, publicKey: { challenge, userVerification: 'preferred' } });
+        window.results[mediation === 'conditional' ? 'conditional' : 'got'] = { json: cred.toJSON(), isCredential: cred instanceof PublicKeyCredential, challenge: Array.from(challenge) };
+        show('connecté', cred.id);
+      } catch (err) {
+        window.results.getError = err.name;
+        show('erreur', err.name);
+      }
+    }
+    document.getElementById('login').addEventListener('click', () => login(undefined));
+    if (new URLSearchParams(location.search).has('conditional')) login('conditional');
+  </script>
+</body>
+</html>

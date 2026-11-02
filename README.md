@@ -1,0 +1,26 @@
+# myMFA — clients
+
+Les clients de myMFA, le générateur de codes de double authentification de la
+suite mindlog.today. Un sous-dossier par client :
+
+| Dossier | Contenu |
+|---|---|
+| [`web/`](web/README.md) | L'application web (100 % navigateur). C'est elle que sert `https://app.mymfa.mindlog.today/`. |
+| [`extension/`](extension/README.md) | L'extension Chromium, autonome : elle embarque l'app web complète, et propose codes, mots de passe et passkeys sur les sites. |
+| [`android/`](android/README.md) | L'application Android native, en Slint (Rust) — à venir. |
+
+Chaque client est autonome : ses dépendances, ses scripts et ses tests vivent
+dans son dossier, et les commandes s'y lancent (`cd web && npm start`).
+Une exception, voulue : l'app web est la seule source des modules communs
+(OTP, coffre, fusion, Drive, WebAuthn, langues). L'extension les recopie depuis
+`web/` à sa construction, avec l'app elle-même. Deux de ses scénarios de bout en
+bout attendent en plus l'app hébergée, servie par `web/`.
+
+## Déploiement
+
+Ce dépôt construit des images ; `LeLab-infra` les déploie. L'image de l'app
+web, `mfa-web`, sert aussi l'archive de l'extension. Elle se construit donc
+depuis la **racine** du dépôt, avec le `Dockerfile` de `web/`
+(`docker build -f web/Dockerfile .`, exclusions dans `.dockerignore`), par la
+pile `mymfa.mindlog.today.app` (son `images.tsv`). Voir `INFRA.md`, généré par
+LeLab-infra.

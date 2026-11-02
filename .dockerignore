@@ -1,0 +1,20 @@
+# Image `mfa-web` : contexte de construction = la racine du dépôt
+# (docker build -f web/Dockerfile .), parce qu'elle embarque l'archive de
+# l'extension. Seuls `web/` et `extension/` y servent.
+
+# Reconstruits dans l'image, jamais copiés depuis le poste.
+**/node_modules
+**/dist
+web/vendor
+extension/src/lib
+extension/src/fonts
+extension/src/icons
+extension/src/app
+
+# Hors de l'image.
+android
+**/test
+web/*.png
+**/.dual-graph
+**/.claude
+*.md

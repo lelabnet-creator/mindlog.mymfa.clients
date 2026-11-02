@@ -1,0 +1,19 @@
+<!doctype html>
+<html lang="fr">
+<head><meta charset="utf-8"><link rel="icon" href="data:,"><title>Connexion — page de test</title></head>
+<body style="font-family: system-ui, sans-serif; padding: 40px;">
+  <h1>Connexion</h1>
+  <form id="login">
+    <p><label>E-mail<br><input id="email" name="email" type="email" autocomplete="username"></label></p>
+    <p><label>Mot de passe<br><input id="password" name="password" type="password" autocomplete="current-password"></label></p>
+    <p><button type="submit">Se connecter</button></p>
+  </form>
+  <script>
+    // Connexion « réussie » : page suivante, sans mettre le mot de passe dans l'adresse.
+    document.getElementById('login').addEventListener('submit', (event) => {
+      event.preventDefault();
+      location.href = 'login-ok.html';
+    });
+  </script>
+</body>
+</html>

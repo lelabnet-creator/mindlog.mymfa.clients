@@ -1,0 +1,20 @@
+{
+  "name": "mymfa",
+  "version": "0.4.0",
+  "private": true,
+  "description": "Générateur OTP (TOTP) simple, 100 % navigateur, stockage localStorage — application web",
+  "scripts": {
+    "start": "node scripts/dev-server.mjs",
+    "dev": "node scripts/dev-server.mjs",
+    "serve:static": "python3 -m http.server ${PORT:-4173} --bind 127.0.0.1",
+    "test": "node --test 'test/*.test.js'",
+    "test:e2e": "node test/e2e/vault.e2e.mjs && node test/e2e/import.e2e.mjs && node test/e2e/dashboard.e2e.mjs",
+    "vendor": "mkdir -p vendor/fonts && cp node_modules/jsqr/dist/jsQR.js vendor/jsQR.js && cp node_modules/@fontsource-variable/manrope/files/manrope-latin-wght-normal.woff2 node_modules/@fontsource-variable/manrope/files/manrope-latin-ext-wght-normal.woff2 vendor/fonts/"
+  },
+  "devDependencies": {
+    "@fontsource-variable/manrope": "^5.3.0",
+    "jsqr": "^1.4.0",
+    "playwright-core": "^1.64.1",
+    "qrcode": "^1.5.4"
+  }
+}
