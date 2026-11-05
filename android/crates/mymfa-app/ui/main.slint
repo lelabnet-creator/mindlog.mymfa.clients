@@ -6,10 +6,11 @@ import { Theme, I18n, IconHome, IconScan, IconKey, IconClock, IconGear } from "c
 export { Theme, I18n } from "common.slint";
 // Police Manrope embarquée (celle de l'app web) — import = enregistrement.
 import "../assets/Manrope.ttf";
-import { AccountRow, NewAccountInput, PreviewInput, PreviewResult } from "structs.slint";
+import { AccountRow, NewAccountInput, PreviewInput, PreviewResult, CredentialRow, CredentialDetail, CredCodeRow, CredPasskeyRow, CredLoginInput } from "structs.slint";
 import { LockScreen } from "lock.slint";
 import { HomeView } from "home.slint";
 import { NewAccountView } from "new.slint";
+import { CredentialsView } from "credentials.slint";
 import { SettingsView } from "settings.slint";
 
 
@@ -43,7 +44,7 @@ component NavButton inherits Rectangle {
     }
 }
 
-/* ─ Vue d'attente (scanner, mots de passe, activité : jalons suivants) ─ */
+/* ─ Vue d'attente (scanner, activité : jalons suivants) ─ */
 component PlaceholderView inherits Rectangle {
     in property <int> view-index;
     VerticalLayout {
@@ -51,12 +52,9 @@ component PlaceholderView inherits Rectangle {
         spacing: 10px;
         padding: 40px;
         if view-index == 2 : IconScan { width: 40px; height: 40px; color: Theme.muted; }
-        if view-index == 3 : IconKey { width: 40px; height: 40px; color: Theme.muted; }
         if view-index == 4 : IconClock { width: 40px; height: 40px; color: Theme.muted; }
         Text {
-            text: view-index == 2 ? I18n.t("scan.title")
-                : view-index == 3 ? I18n.t("nav.passwords")
-                : I18n.t("nav.activity");
+            text: view-index == 2 ? I18n.t("scan.title") : I18n.t("nav.activity");
             color: Theme.text;
             font-size: 17px;
             font-weight: 700;
@@ -84,6 +82,15 @@ export component MainWindow inherits Window {
     in-out property <[AccountRow]> accounts: [];
     in-out property <[string]> tags: [];
     in-out property <bool> has-accounts: false;
+    in-out property <[CredentialRow]> cred-entries: [];
+    in-out property <int> cred-count-all: 0;
+    in-out property <int> cred-count-logins: 0;
+    in-out property <int> cred-count-passkeys: 0;
+    in-out property <bool> cred-has-entries: false;
+    in-out property <bool> cred-detail-open: false;
+    in-out property <CredentialDetail> cred-detail;
+    in-out property <[CredCodeRow]> cred-codes: [];
+    in-out property <[CredPasskeyRow]> cred-passkeys: [];
     in-out property <int> theme: 0;
     in-out property <bool> hide-codes: false;
     in-out property <int> auto-lock-min: 5;
@@ -106,6 +113,18 @@ export component MainWindow inherits Window {
     callback set-hide-codes(bool);
     callback set-auto-lock(int);
     callback apply-filter(string, int, string);
+    callback cred-apply-filter(string, int);
+    callback cred-select(string);
+    callback cred-back();
+    callback cred-toggle-reveal(string);
+    callback cred-copy-user(string);
+    callback cred-copy-password(string);
+    callback cred-copy-code(string);
+    callback cred-save-login(CredLoginInput) -> string;
+    callback cred-remove-login(string);
+    callback cred-remove-passkey(string);
+    callback cred-prefill(string) -> CredLoginInput;
+    callback cred-generate(int, bool, bool, bool) -> string;
 
     property <int> view: 0;      // 0 codes, 1 nouveau, 2 scanner, 3 mots de passe, 4 activité, 5 réglages
 
@@ -157,8 +176,34 @@ export component MainWindow inherits Window {
                     add(input) => { return root.add-account(input); }
                     preview(input) => { return root.preview(input); }
                 }
-                if root.view == 2 || root.view == 3 || root.view == 4 : PlaceholderView {
+                if root.view == 2 || root.view == 4 : PlaceholderView {
                     view-index: root.view;
+                }
+                if root.view == 3 : CredentialsView {
+                    entries: root.cred-entries;
+                    count-all: root.cred-count-all;
+                    count-logins: root.cred-count-logins;
+                    count-passkeys: root.cred-count-passkeys;
+                    has-entries: root.cred-has-entries;
+                    detail: root.cred-detail;
+                    codes: root.cred-codes;
+                    passkeys: root.cred-passkeys;
+                    detail-open: root.cred-detail-open;
+                    apply-filter(query, filter) => { root.cred-apply-filter(query, filter); }
+                    select(id) => { root.cred-select(id); }
+                    back() => { root.cred-back(); }
+                    toggle-reveal(id) => { root.cred-toggle-reveal(id); }
+                    copy-user(id) => { root.cred-copy-user(id); }
+                    copy-password(id) => { root.cred-copy-password(id); }
+                    copy-code(id) => { root.cred-copy-code(id); }
+                    save(input) => { return root.cred-save-login(input); }
+                    remove-login(id) => { root.cred-remove-login(id); }
+                    remove-passkey(id) => { root.cred-remove-passkey(id); }
+                    prefill(id) => { return root.cred-prefill(id); }
+                    generate(length, digits, symbols, words) => {
+                        return root.cred-generate(length, digits, symbols, words);
+                    }
+                    password-strength(password) => { return root.password-strength(password); }
                 }
                 if root.view == 5 : SettingsView {
                     theme: root.theme;

@@ -45,3 +45,51 @@ export struct PreviewResult {
     initials: string,
     tile-color: color,
 }
+
+/* ───── Vue Mots de passe ───── */
+
+export struct CredentialRow {
+    id: string,
+    kind: int,             // 0 mot de passe, 1 passkey, -1 ligne de titre de section
+    name: string,          // nom du site (titre, sinon service du compte 2FA, sinon domaine) ; titre de section si kind < 0
+    sub: string,           // identifiant / affichage de la passkey
+    host: string,
+    chip-2fa: bool,        // un compte 2FA est rattaché au site
+    chip-passkey: bool,
+    tile-color: color,
+    initials: string,
+}
+
+export struct CredentialDetail {
+    id: string,
+    name: string,
+    host: string,
+    origin: string,        // pour « Ouvrir le site » (millestone pont natif ; affiché sinon)
+    is-login: bool,
+    username: string,
+    password: string,      // révélée ou masquée : le backend décide
+    revealed: bool,
+    meta: string,          // « Modifié le … » / « Passkey seule… »
+}
+
+export struct CredCodeRow {
+    id: string,            // compte 2FA lié au site
+    label: string,         // « Service · compte »
+    code: string,          // formaté « 123 456 »
+    remaining: int,
+    progress: float,
+}
+
+export struct CredPasskeyRow {
+    id: string,
+    label: string,         // « affichage · identifiant » ou rpId
+    created: string,       // date formatée + site
+}
+
+export struct CredLoginInput {
+    id: string,            // « » = création
+    url: string,
+    username: string,
+    password: string,
+    title: string,
+}

@@ -9,6 +9,7 @@
  */
 pub mod otp;
 pub mod otpauth;
+pub mod passgen;
 pub mod store;
 pub mod sync;
 pub mod texts;

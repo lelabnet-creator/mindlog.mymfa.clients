@@ -2,7 +2,7 @@
 
 L'application Android native de myMFA : interface [Slint](https://slint.dev) en
 Rust, cœur métier répliqué depuis l'app web. Tickets Plane : épique AND
-(AND-02 pour ce socle).
+(AND-02 pour ce socle, AND-03 pour la vue Mots de passe).
 
 ## Ce que contient ce socle (jalon 1)
 
@@ -32,12 +32,34 @@ Rust, cœur métier répliqué depuis l'app web. Tickets Plane : épique AND
   (`mymfa-vault.json`, même contenu que la sauvegarde Drive du web) dans le
   stockage interne de l'app.
 
+## Vue Mots de passe (jalon 2, AND-03)
+
+Miroir de `web/js/credentials.js` : mots de passe et passkeys des sites, dans
+le coffre chiffré, jamais hors coffre.
+
+- **Cœur** (`mymfa-core`) : modèle `Login` et `SitePasskey` (`mymfa.logins.v1`,
+  `mymfa.passkeys.v1`, mêmes clés et champs JSON que le web), CRUD fidèles
+  (`addLogin`/`updateLogin`/`removeLogin`, passkey remplacée par compte du
+  site, journal sans jamais y écrire un mot de passe), rattachement site↔compte
+  (`siteOf`, `accountMatchesHost`, hôtes ignorés et suffixes multi-parties
+  repris de `store.js`), générateur sans biais de `credentials.js`
+  (`passgen.rs` : caractères ou phrase de syllabes).
+- **UI** (`credentials.slint`) : onglets Tout/Mots de passe/Passkeys avec
+  compteurs, « Récemment utilisés » (3 derniers, 30 jours), recherche, tuiles
+  à initiales et puces 2FA/Passkey ; détail par site (mot de passe masqué puis
+  révélé, code 2FA du site en direct, passkeys datées, métadonnées) ;
+  éditeur plein écran avec générateur (longueur, familles, phrase) et jauge
+  de solidité ; suppression armée en deux pressions.
+- **Preuve d'interopérabilité réelle** : un coffre créé par l'APK sur
+  l'émulateur (avec un login) se déchiffre avec le `vault.js` du web — clés,
+  champs et journal identiques ; `npm test` rejoue l'interop dans les deux
+  sens.
+
 ## Jalons suivants
 
-Caméra/QR (JNI), vue Mots de passe/passkeys, Tableau de bord (HIBP), Activité,
-sauvegarde Drive (OAuth), Credential Manager/autofill (AND-01, passerelle
-JNI/Kotlin), déverrouillage par passkey (PRF). Les onglets concernés affichent
-« Bientôt ».
+Caméra/QR (JNI), Tableau de bord (HIBP), Activité, sauvegarde Drive (OAuth),
+Credential Manager/autofill (AND-01, passerelle JNI/Kotlin), déverrouillage
+par passkey (PRF). Les onglets concernés affichent « Bientôt ».
 
 ## Structure
 
@@ -48,10 +70,10 @@ JNI/Kotlin), déverrouillage par passkey (PRF). Les onglets concernés affichent
 | `scripts/sync-locales.mjs` | Convertit `../web/js/locales/{fr,en}.js` en Rust (web/ reste la source unique, les copies ne se versionnent pas — comme l'extension) |
 | `scripts/make-fixtures.mjs` | Chiffre des coffres de test **avec le vrai `vault.js`** et calcule des fusions attendues avec le vrai `sync.js` |
 | `scripts/interop-check.mjs` | Vérifie qu'un coffre écrit par Rust s'ouvre avec `vault.js` (sens inverse) |
-| `crates/mymfa-core/src/` | `otp`, `otpauth`, `vault`, `sync`, `store`, `texts` (généré) |
+| `crates/mymfa-core/src/` | `otp`, `otpauth`, `vault`, `sync`, `store`, `passgen`, `texts` (généré) |
 | `crates/mymfa-core/tests/` | Vecteurs RFC 4226/6238, interop coffre et fusion (fixtures générées) |
-| `crates/mymfa-app/ui/` | `common.slint` (palette, i18n, icônes, composants), `lock`, `home`, `new`, `settings`, `main` |
-| `crates/mymfa-app/src/` | `backend.rs` (état, ticker des codes, auto-lock), `storage.rs` (fichiers, thread d'écriture) |
+| `crates/mymfa-app/ui/` | `common.slint` (palette, i18n, icônes, composants), `lock`, `home`, `credentials`, `new`, `settings`, `main` |
+| `crates/mymfa-app/src/` | `backend.rs` (état, ticker des codes, auto-lock, vue Mots de passe), `storage.rs` (fichiers, thread d'écriture) |
 | `crates/mymfa-app/manifest.yaml` | Identité xbuild : paquet `today.mindlog.mymfa`, label myMFA, icône |
 | `crates/mymfa-app/assets/` | Manrope (police du web, OFL) et l'icône |
 
@@ -100,5 +122,12 @@ exactement ce cœur.
 - Thème « Auto » = sombre en attendant la lecture du réglage système (pont
   natif AND-01).
 - Presse-papiers via le `TextInput` interne de Slint (voie officielle, backend
-  Android inclus) ; le toast confirme toujours la copie.
+  Android inclus) ; le toast confirme toujours la copie. Le web vide le
+  presse-papiers 30 s après la copie d'un mot de passe : impossible sans pont
+  natif, le secret y reste jusqu'à la prochaine copie.
+- Les inserts système (barre d'état, clavier) ne sont pas encore lus : hauteur
+  fixe raisonnable (`Theme.safe-top`) et champs atteignables — un pont d'inserts
+  viendra avec AND-01.
+- « Générer » hors éditeur (bloc autonome du web) suit le jalon autofill
+  (AND-01) ; le générateur complet est dans l'éditeur.
 - `xbuild` épingle un NDK plafonné à l'API 33 (`targetSdkVersion 33`).

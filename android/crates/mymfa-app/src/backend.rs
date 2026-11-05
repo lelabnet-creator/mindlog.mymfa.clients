@@ -1,12 +1,15 @@
 /*
  * Backend de l'app : état (coffre, comptes, préférences), persistance fichier,
  * ticker des codes, verrouillage automatique — miroir de web/js/{lock,app}.js
- * pour la part du socle (vues Codes, Nouveau compte, Réglages).
+ * pour la part du socle (vues Codes, Nouveau compte, Réglages) et de
+ * web/js/credentials.js pour la vue Mots de passe.
  */
 use crate::storage;
 use crate::{AccountRow, MainWindow, NewAccountInput, PreviewInput, PreviewResult};
+use crate::{CredCodeRow, CredLoginInput, CredPasskeyRow, CredentialDetail, CredentialRow};
 use mymfa_core::otp::{self, Algorithm};
-use mymfa_core::store::{Account, Store};
+use mymfa_core::passgen::{self, GenOptions};
+use mymfa_core::store::{self, Account, SitePasskey, Store};
 use mymfa_core::texts::{self, Locale};
 use mymfa_core::vault::{self, Dek, VaultRecord};
 use mymfa_core::DataMap;
@@ -49,9 +52,34 @@ fn mask_code(digits: u32) -> String {
     format!("{} {}", "•".repeat(half), "•".repeat(rest))
 }
 
-/// Initiales du service : « Google Cloud » → GC, « GitHub » → GH.
+/// Mot de passe masqué du détail (web : `'•'.repeat(12)`, longueur fixe).
+fn mask_password() -> String {
+    "•".repeat(12)
+}
+
+/// Date au format moyen de la locale (web : `Intl.DateTimeFormat(dateStyle: 'medium')`).
+fn format_date(iso: &str, locale: Locale) -> String {
+    // ISO : YYYY-MM-DDT… — le préfixe suffit.
+    if iso.len() < 10 {
+        return String::new();
+    }
+    let (year, month, day) = (&iso[0..4], &iso[5..7], &iso[8..10]);
+    const FR_MONTHS: [&str; 12] = ["janv.", "févr.", "mars", "avr.", "mai", "juin", "juil.", "août", "sept.", "oct.", "nov.", "déc."];
+    const EN_MONTHS: [&str; 12] = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+    let index = month.parse::<usize>().unwrap_or(1).saturating_sub(1).min(11);
+    match locale {
+        Locale::Fr => format!("{day} {} {year}", FR_MONTHS[index]),
+        Locale::En => format!("{} {day}, {year}", EN_MONTHS[index]),
+    }
+}
+
+/// Initiales du service (port exact de `initials` de credentials.js) :
+/// « GitHub » → GH, « notion.so » → NO, « Google Cloud » → GC.
 fn initials(name: &str) -> String {
-    let words: Vec<&str> = name.trim().split(|c: char| c.is_whitespace() || c == '.' || c == '_' || c == '-')
+    let text = name.trim();
+    // Sans espace : la partie avant le premier point (« notion.so » → « notion »).
+    let base = if text.chars().any(|c| c.is_whitespace()) { text } else { text.split('.').next().unwrap_or(text) };
+    let words: Vec<&str> = base.split(|c: char| c.is_whitespace() || c == '_' || c == '@' || c == '-')
         .filter(|w| !w.is_empty())
         .collect();
     let up = |s: &str| s.to_uppercase();
@@ -98,6 +126,33 @@ fn now_ms() -> u64 {
         .as_millis() as u64
 }
 
+/// ISO 8601 → millisecondes Unix (pour « Récemment utilisés »), None si illisible.
+fn iso_ms(iso: &str) -> Option<u64> {
+    let secs = iso.get(0..19)?;
+    // Format web : YYYY-MM-DDTHH:MM:SS.sssZ — comparaison lexicale suffisante
+    // pour « est plus récent que » ; ici il faut un âge : parsing minimal.
+    let year: i64 = secs.get(0..4)?.parse().ok()?;
+    let month: i64 = secs.get(5..7)?.parse().ok()?;
+    let day: i64 = secs.get(8..10)?.parse().ok()?;
+    let hour: i64 = secs.get(11..13)?.parse().ok()?;
+    let minute: i64 = secs.get(14..16)?.parse().ok()?;
+    let second: i64 = secs.get(17..19)?.parse().ok()?;
+    // Jours civils → secondes (epoch) : suffisant, pas de fuseau (ISO = UTC).
+    let days = days_from_civil(year, month, day);
+    Some(((days * 86_400 + hour * 3600 + minute * 60 + second) * 1000) as u64)
+}
+
+/// Date civile → jours depuis l'époque (algorithme de Howard Hinnant, inverse de lib.rs).
+fn days_from_civil(y: i64, m: i64, d: i64) -> i64 {
+    let y = if m <= 2 { y - 1 } else { y };
+    let era = if y >= 0 { y } else { y - 399 } / 400;
+    let yoe = y - era * 400;
+    let mp = (m + 9) % 12;
+    let doy = (153 * mp + 2) / 5 + d - 1;
+    let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
+    era * 146_097 + doe - 719_468
+}
+
 /* ───── État ───── */
 
 struct Inner {
@@ -107,10 +162,14 @@ struct Inner {
     dek: Option<Dek>,            // présent = déverrouillé
     store: Store,
     revealed: HashSet<String>,   // codes révélés (masquage)
+    revealed_pw: HashSet<String>, // mots de passe révélés (détail Mots de passe)
     accounts: Vec<Account>,      // cache pour les actions de carte
     query: String,               // filtres de la vue Codes
     filter_mode: i32,            // 0 tous, 1 favoris, >=2 tag
     filter_tag: String,
+    cred_query: String,          // filtres de la vue Mots de passe
+    cred_filter: i32,            // 0 tout, 1 logins, 2 passkeys
+    cred_selected: Option<String>,
     failures: u32,
     wait_until: Option<Instant>, // anti force brute (web/js/lock.js)
     last_activity: Instant,
@@ -167,10 +226,14 @@ impl Backend {
             dek: None,
             store: Store::new(),
             revealed: HashSet::new(),
+            revealed_pw: HashSet::new(),
             accounts: Vec::new(),
             query: String::new(),
             filter_mode: 0,
             filter_tag: String::new(),
+            cred_query: String::new(),
+            cred_filter: 0,
+            cred_selected: None,
             failures: 0,
             wait_until: None,
             last_activity: Instant::now(),
@@ -209,11 +272,17 @@ impl Backend {
         inner.store = Store::new();
         inner.accounts.clear();
         inner.revealed.clear();
+        inner.revealed_pw.clear();
+        inner.cred_selected = None;
         inner.failures = 0;
         inner.wait_until = None;
         ui.set_lock_mode(if inner.record.is_some() { 1 } else { 0 });
         ui.set_accounts(ModelRc::new(VecModel::<AccountRow>::from(Vec::new())));
         ui.set_tags(ModelRc::new(VecModel::<SharedString>::from(Vec::new())));
+        ui.set_cred_entries(ModelRc::new(VecModel::<CredentialRow>::from(Vec::new())));
+        ui.set_cred_detail_open(false);
+        ui.set_cred_codes(ModelRc::new(VecModel::<CredCodeRow>::from(Vec::new())));
+        ui.set_cred_passkeys(ModelRc::new(VecModel::<CredPasskeyRow>::from(Vec::new())));
     }
 
     /// Une ligne passe-t-elle le filtre de la vue Codes ?
@@ -276,6 +345,282 @@ impl Backend {
         inner.accounts = if inner.locked() { Vec::new() } else { inner.store.list() };
     }
 
+    /* ───── Vue Mots de passe (miroir de web/js/credentials.js) ───── */
+
+    /// Nom d'un site : titre donné, sinon service du compte 2FA rattaché,
+    /// sinon domaine registrable (web : `siteName`).
+    fn site_name(host: &str, title: &str, accounts: &[Account]) -> String {
+        if !title.is_empty() {
+            return title.to_string();
+        }
+        accounts.iter()
+            .find(|a| !a.issuer.is_empty() && store::account_matches_host(&a.issuer, host))
+            .map(|a| a.issuer.clone())
+            .unwrap_or_else(|| store::site_of(host))
+    }
+
+    /// Ce qui dépend d'un site : comptes 2FA (TOTP) et passkeys du même
+    /// domaine registrable (web : `related`).
+    fn related_accounts(accounts: &[Account], host: &str) -> Vec<Account> {
+        accounts.iter()
+            .filter(|a| a.type_ != "hotp" && store::account_matches_host(&a.issuer, host))
+            .cloned()
+            .collect()
+    }
+
+    fn related_passkeys(passkeys: &[SitePasskey], host: &str) -> Vec<SitePasskey> {
+        let site = store::site_of(host);
+        passkeys.iter().filter(|p| store::site_of(&p.rpId) == site).cloned().collect()
+    }
+
+    /// Lignes de la liste (web : `entries` + `visible` + sections).
+    fn refresh_cred(ui: &MainWindow, inner: &Inner) {
+        if inner.locked() {
+            ui.set_cred_entries(ModelRc::new(VecModel::<CredentialRow>::from(Vec::new())));
+            ui.set_cred_count_all(0);
+            ui.set_cred_count_logins(0);
+            ui.set_cred_count_passkeys(0);
+            ui.set_cred_has_entries(false);
+            ui.set_cred_detail_open(false);
+            return;
+        }
+        let locale = Self::locale(&inner.prefs);
+        let accounts = inner.store.list();
+        let logins = inner.store.logins();
+        let passkeys = inner.store.site_passkeys();
+
+        struct Entry {
+            kind: i32,
+            id: String,
+            name: String,
+            sub: String,
+            host: String,
+            note: String,
+            chip_2fa: bool,
+            chip_passkey: bool,
+            standalone: bool,
+            used_at: Option<String>,
+        }
+        let mut entries: Vec<Entry> = Vec::new();
+        let login_sites: Vec<String> = logins.iter()
+            .map(|l| store::site_of(&store::host_of(&l.origin)))
+            .collect();
+        for login in &logins {
+            let host = store::host_of(&login.origin);
+            let related = Self::related_accounts(&accounts, &host);
+            let site_passkeys = Self::related_passkeys(&passkeys, &host);
+            let name = Self::site_name(&host, &login.title, &accounts);
+            entries.push(Entry {
+                kind: 0,
+                id: login.id.clone(),
+                name: name.clone(),
+                sub: if login.username.is_empty() { texts::t(locale, "credentials.noUsername") } else { login.username.clone() },
+                host,
+                note: login.note.clone(),
+                chip_2fa: !related.is_empty(),
+                chip_passkey: !site_passkeys.is_empty(),
+                standalone: true,
+                used_at: login.usedAt.clone(),
+            });
+        }
+        for passkey in &passkeys {
+            let related = Self::related_accounts(&accounts, &passkey.rpId);
+            let name = Self::site_name(&passkey.rpId, if passkey.rpName != passkey.rpId { &passkey.rpName } else { "" }, &accounts);
+            entries.push(Entry {
+                kind: 1,
+                id: passkey.id.clone(),
+                name: name.clone(),
+                sub: if !passkey.userDisplayName.is_empty() { passkey.userDisplayName.clone() }
+                    else if !passkey.userName.is_empty() { passkey.userName.clone() }
+                    else { passkey.rpId.clone() },
+                host: passkey.rpId.clone(),
+                note: String::new(),
+                chip_2fa: !related.is_empty(),
+                chip_passkey: true,
+                standalone: !login_sites.contains(&store::site_of(&passkey.rpId)),
+                used_at: passkey.usedAt.clone(),
+            });
+        }
+
+        // Comptes des onglets (avant recherche).
+        ui.set_cred_count_all((entries.len()) as i32);
+        ui.set_cred_count_logins(logins.len() as i32);
+        ui.set_cred_count_passkeys(passkeys.len() as i32);
+
+        // Onglet actif + recherche (web : `visible`).
+        let query = inner.cred_query.trim().to_lowercase();
+        let mut list: Vec<&Entry> = entries.iter()
+            .filter(|e| match inner.cred_filter {
+                1 => e.kind == 0,
+                2 => e.kind == 1,
+                _ => e.kind == 0 || e.standalone, // Tout : passkeys seules d'un site sans mot de passe
+            })
+            .filter(|e| query.is_empty() || [e.name.as_str(), e.host.as_str(), e.sub.as_str(), e.note.as_str()]
+                .iter().any(|v| v.to_lowercase().contains(&query)))
+            .collect();
+        list.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
+
+        // « Récemment utilisés » : logins touchés dans les 30 derniers jours,
+        // seulement sur l'onglet Tout sans recherche (web : RECENT_MAX/DAYS).
+        const RECENT_MAX: usize = 3;
+        const RECENT_DAYS: i64 = 30;
+        let since_ms = now_ms().saturating_sub(RECENT_DAYS as u64 * 86_400_000);
+        let recent_ids: Vec<String> = if inner.cred_filter == 0 && query.is_empty() {
+            let mut recent: Vec<&Entry> = entries.iter()
+                .filter(|e| e.kind == 0 && e.used_at.as_deref()
+                    .and_then(|iso| iso_ms(iso))
+                    .map(|ms| ms > since_ms)
+                    .unwrap_or(false))
+                .collect();
+            recent.sort_by(|a, b| b.used_at.cmp(&a.used_at));
+            recent.into_iter().take(RECENT_MAX).map(|e| e.id.clone()).collect()
+        } else {
+            Vec::new()
+        };
+
+        let mut rows: Vec<CredentialRow> = Vec::new();
+        let mut last_section = String::new();
+        for entry in list.iter() {
+            let section = if recent_ids.contains(&entry.id) {
+                "recent".to_string()
+            } else {
+                match inner.cred_filter {
+                    1 => "logins".to_string(),
+                    2 => "passkeys".to_string(),
+                    _ => "all".to_string(),
+                }
+            };
+            if section != last_section {
+                // Ligne de titre de section (kind -1), comme les `<h2>` du web.
+                let label = match section.as_str() {
+                    "recent" => texts::t(locale, "credentials.recent"),
+                    _ => if !recent_ids.is_empty() { texts::t(locale, "credentials.allSites") }
+                        else { texts::t(locale, &format!("credentials.section.{section}")) },
+                };
+                rows.push(CredentialRow {
+                    id: "".into(),
+                    kind: -1,
+                    name: label.into(),
+                    sub: "".into(),
+                    host: "".into(),
+                    chip_2fa: false,
+                    chip_passkey: false,
+                    tile_color: brand_color(&entry.name),
+                    initials: "".into(),
+                });
+                last_section = section;
+            }
+            rows.push(CredentialRow {
+                id: entry.id.clone().into(),
+                kind: entry.kind,
+                name: entry.name.clone().into(),
+                sub: entry.sub.clone().into(),
+                host: entry.host.clone().into(),
+                chip_2fa: entry.chip_2fa,
+                chip_passkey: entry.chip_passkey,
+                tile_color: brand_color(&entry.name),
+                initials: initials(if entry.name.is_empty() { "?" } else { &entry.name }).into(),
+            });
+        }
+        ui.set_cred_entries(ModelRc::new(VecModel::from(rows)));
+        ui.set_cred_has_entries(!entries.is_empty());
+    }
+
+    /// Détail du site choisi (web : `renderDetail`) : mot de passe, code 2FA
+    /// lié, passkeys du site. Les codes sont recalculés à chaque tic.
+    fn refresh_cred_detail(ui: &MainWindow, inner: &Inner, with_codes: bool) {
+        let Some(selected) = inner.cred_selected.clone() else {
+            ui.set_cred_detail_open(false);
+            return;
+        };
+        let locale = Self::locale(&inner.prefs);
+        let accounts = inner.store.list();
+        let logins = inner.store.logins();
+        let passkeys = inner.store.site_passkeys();
+        let login = logins.iter().find(|l| l.id == selected.as_str());
+        let passkey = passkeys.iter().find(|p| p.id == selected.as_str());
+        let Some((name, host, origin, is_login)) = (match (login, passkey) {
+            (Some(login), _) => {
+                let host = store::host_of(&login.origin);
+                Some((Self::site_name(&host, &login.title, &accounts), host, login.origin.clone(), true))
+            }
+            (_, Some(passkey)) => {
+                let name = Self::site_name(&passkey.rpId, if passkey.rpName != passkey.rpId { &passkey.rpName } else { "" }, &accounts);
+                Some((name, passkey.rpId.clone(), format!("https://{}", passkey.rpId), false))
+            }
+            _ => None,
+        }) else {
+            // Élément choisi introuvable (supprimé, coffre changé…) : retour à la liste.
+            ui.set_cred_detail_open(false);
+            return;
+        };
+        let meta = match login {
+            Some(login) => if login.source == "extension" {
+                texts::t(locale, "credentials.metaExtension")
+            } else {
+                texts::tf(locale, "credentials.meta", &[("date", &format_date(&login.updatedAt, locale))])
+            },
+            None => texts::t(locale, "credentials.passkeyOnly"),
+        };
+        ui.set_cred_detail_open(true);
+        ui.set_cred_detail(CredentialDetail {
+            id: selected.into(),
+            name: name.into(),
+            host: host.clone().into(),
+            origin: origin.into(),
+            is_login,
+            username: login.map(|l| {
+                if l.username.is_empty() { texts::t(locale, "credentials.noUsername") } else { l.username.clone() }
+            }).unwrap_or_default().into(),
+            password: login.map(|l| if inner.revealed_pw.contains(&l.id) { l.password.clone() } else { mask_password() })
+                .unwrap_or_default().into(),
+            revealed: login.map(|l| inner.revealed_pw.contains(&l.id)).unwrap_or(false),
+            meta: meta.into(),
+        });
+        if !with_codes {
+            return;
+        }
+        // Code 2FA du site, en direct (même compte que l'onglet Codes).
+        let mut code_rows: Vec<CredCodeRow> = Vec::new();
+        let now = now_ms();
+        for account in Self::related_accounts(&accounts, &host) {
+            let algorithm = Algorithm::parse(&account.algorithm).unwrap_or(Algorithm::Sha1);
+            let code = otp::totp(&account.secret, account.period, account.digits, algorithm, now)
+                .unwrap_or_else(|_| "—————".into());
+            let remaining = otp::remaining_seconds(account.period, now);
+            let label = [&account.issuer, &account.account].iter()
+                .filter(|s| !s.is_empty())
+                .map(|s| s.to_string())
+                .collect::<Vec<_>>().join(" · ");
+            code_rows.push(CredCodeRow {
+                id: account.id.clone().into(),
+                label: label.into(),
+                code: format_code(&code).into(),
+                remaining: remaining as i32,
+                progress: remaining as f32 / account.period as f32,
+            });
+        }
+        ui.set_cred_codes(ModelRc::new(VecModel::from(code_rows)));
+        // Passkeys du site ; celle choisie (entrée passkey) en premier.
+        let mut site_passkeys = Self::related_passkeys(&passkeys, &host);
+        if let Some(current) = passkey {
+            site_passkeys.sort_by_key(|p| if p.id == current.id { 0 } else { 1 });
+        }
+        let passkey_rows: Vec<CredPasskeyRow> = site_passkeys.iter().map(|p| {
+            let label = [p.userDisplayName.as_str(), p.userName.as_str()].iter()
+                .filter(|s| !s.is_empty())
+                .map(|s| s.to_string())
+                .collect::<Vec<_>>().join(" · ");
+            CredPasskeyRow {
+                id: p.id.clone().into(),
+                label: if label.is_empty() { p.rpId.clone().into() } else { label.into() },
+                created: texts::tf(locale, "credentials.passkeyCreated",
+                    &[("date", &format_date(&p.createdAt, locale)), ("site", &p.rpId)]).into(),
+            }
+        }).collect();
+        ui.set_cred_passkeys(ModelRc::new(VecModel::from(passkey_rows)));
+    }
+
     /* ───── Ticker : codes, verrouillage auto, compte à rebours ───── */
 
     fn start_ticker(ui: MainWindow, backend: Rc<RefCell<Inner>>) {
@@ -288,7 +633,8 @@ impl Backend {
             // Verrouillage automatique (activité = actions utilisateur).
             if !inner.locked() && inner.prefs.auto_lock_min > 0 {
                 let idle = inner.last_activity.elapsed();
-                if idle > Duration::from_secs(inner.prefs.auto_lock_min as u64) {
+                // auto_lock_min est en minutes (web : [1, 5, 15, 60, 0]).
+                if idle > Duration::from_secs(inner.prefs.auto_lock_min as u64 * 60) {
                     Self::lock(&mut inner, &ui);
                     return;
                 }
@@ -298,6 +644,10 @@ impl Backend {
             }
             Self::reload_accounts(&mut inner);
             Self::refresh(&ui, &inner);
+            // Codes 2FA du détail Mots de passe, en direct (seconde par seconde).
+            if ui.get_cred_detail_open() {
+                Self::refresh_cred_detail(&ui, &inner, true);
+            }
         });
         // Le timer doit survivre : il vit dans la closure du backend gardée par l'UI.
         std::mem::forget(timer);
@@ -349,6 +699,7 @@ impl Backend {
                         ui.set_toast(Self::error_text(&inner, &error));
                     }
                     Self::refresh(&ui, &inner);
+                    Self::refresh_cred(&ui, &inner);
                     ui.set_lock_mode(2);
                     "".into()
                 }
@@ -377,6 +728,7 @@ impl Backend {
                     Self::reload_accounts(&mut inner);
                     let ui = weak.unwrap();
                     Self::refresh(&ui, &inner);
+                    Self::refresh_cred(&ui, &inner);
                     ui.set_lock_mode(2);
                     "".into()
                 }
@@ -408,10 +760,13 @@ impl Backend {
             let mut inner = b5.borrow_mut();
             Self::bump_activity(&mut inner);
             match Self::resolve_new_account(&input) {
-                Err(error) => Self::error_text(&inner, &error),
+                // Code d'erreur brut : l'UI préfixe avec « error. » (comme
+                // create-vault/unlock) — un texte déjà traduit s'afficherait
+                // « error.<traduction> ».
+                Err(error) => error.code.into(),
                 Ok(new) => {
                     if inner.store.find_duplicate(&new.secret, &new.issuer, &new.account).is_some() {
-                        return Self::error_text(&inner, &mymfa_core::AppError::new("duplicate"));
+                        return "duplicate".into();
                     }
                     inner.store.add(&new, Some("key"));
                     if let Err(error) = inner.persist() {
@@ -420,6 +775,7 @@ impl Backend {
                     Self::reload_accounts(&mut inner);
                     let ui = weak.unwrap();
                     Self::refresh(&ui, &inner);
+                    Self::refresh_cred(&ui, &inner); // puces 2FA de la liste Mots de passe
                     "".into()
                 }
             }
@@ -565,6 +921,8 @@ impl Backend {
             let ui = weak.unwrap();
             Self::apply_prefs(&ui, &inner.prefs);
             Self::refresh(&ui, &inner);
+            Self::refresh_cred(&ui, &inner);
+            Self::refresh_cred_detail(&ui, &inner, false); // métadonnées traduites
         });
 
         let b13 = Rc::clone(&backend);
@@ -596,6 +954,198 @@ impl Backend {
             inner.save_prefs();
             let ui = weak.unwrap();
             Self::apply_prefs(&ui, &inner.prefs);
+        });
+
+        /* ── Vue Mots de passe ── */
+
+        let weak = ui.as_weak();
+        let b16 = Rc::clone(&backend);
+        ui.on_cred_apply_filter(move |query, filter| {
+            let mut inner = b16.borrow_mut();
+            inner.cred_query = query.to_string();
+            inner.cred_filter = filter;
+            Self::refresh_cred(&weak.unwrap(), &inner);
+        });
+
+        let weak = ui.as_weak();
+        let b17 = Rc::clone(&backend);
+        ui.on_cred_select(move |id| {
+            let mut inner = b17.borrow_mut();
+            Self::bump_activity(&mut inner);
+            inner.cred_selected = Some(id.to_string());
+            Self::refresh_cred_detail(&weak.unwrap(), &inner, true);
+        });
+
+        let weak = ui.as_weak();
+        let b18 = Rc::clone(&backend);
+        ui.on_cred_back(move || {
+            let mut inner = b18.borrow_mut();
+            Self::bump_activity(&mut inner);
+            inner.cred_selected = None;
+            weak.unwrap().set_cred_detail_open(false);
+        });
+
+        let weak = ui.as_weak();
+        let b19 = Rc::clone(&backend);
+        ui.on_cred_toggle_reveal(move |id| {
+            let mut inner = b19.borrow_mut();
+            Self::bump_activity(&mut inner);
+            let id = id.to_string();
+            if !inner.store.logins().iter().any(|l| l.id == id) {
+                return;
+            }
+            if inner.revealed_pw.contains(&id) {
+                inner.revealed_pw.remove(&id);
+            } else {
+                inner.revealed_pw.insert(id);
+            }
+            Self::refresh_cred_detail(&weak.unwrap(), &inner, false);
+        });
+
+        let weak = ui.as_weak();
+        let b20 = Rc::clone(&backend);
+        ui.on_cred_copy_user(move |id| {
+            let mut inner = b20.borrow_mut();
+            Self::bump_activity(&mut inner);
+            let locale = Self::locale(&inner.prefs);
+            let Some(login) = inner.store.logins().into_iter().find(|l| l.id == id.to_string()) else { return };
+            if login.username.is_empty() {
+                return;
+            }
+            let ui = weak.unwrap();
+            Self::copy_text(&ui, &login.username);
+            ui.set_toast(texts::t(locale, "credentials.copiedUser").into());
+        });
+
+        let weak = ui.as_weak();
+        let b21 = Rc::clone(&backend);
+        ui.on_cred_copy_password(move |id| {
+            let mut inner = b21.borrow_mut();
+            Self::bump_activity(&mut inner);
+            let locale = Self::locale(&inner.prefs);
+            let Some(login) = inner.store.logins().into_iter().find(|l| l.id == id.to_string()) else { return };
+            let ui = weak.unwrap();
+            Self::copy_text(&ui, &login.password);
+            // « Récemment utilisés » — comme le web (touchLogin).
+            inner.store.touch_login(&login.id);
+            let _ = inner.persist();
+            Self::refresh_cred(&ui, &inner);
+            ui.set_toast(texts::t(locale, "credentials.copiedPassword").into());
+            // NB : le web vide le presse-papiers après 30 s — impossible sans
+            // pont natif ; divergence v1 documentée.
+        });
+
+        let weak = ui.as_weak();
+        let b22 = Rc::clone(&backend);
+        ui.on_cred_copy_code(move |account_id| {
+            let mut inner = b22.borrow_mut();
+            Self::bump_activity(&mut inner);
+            let locale = Self::locale(&inner.prefs);
+            let Some(account) = inner.store.list().into_iter().find(|a| a.id == account_id.to_string()) else { return };
+            let code = Self::current_code(&account);
+            if code.is_empty() {
+                return;
+            }
+            let ui = weak.unwrap();
+            Self::copy_text(&ui, &code);
+            inner.store.touch_account(&account.id);
+            let _ = inner.persist();
+            ui.set_toast(texts::t(locale, "credentials.copiedCode").into());
+        });
+
+        let weak = ui.as_weak();
+        let b23 = Rc::clone(&backend);
+        ui.on_cred_save_login(move |input| {
+            let mut inner = b23.borrow_mut();
+            Self::bump_activity(&mut inner);
+            let result: Result<String, mymfa_core::AppError> = if input.id.is_empty() {
+                inner.store.add_login(&store::NewLogin {
+                    origin: input.url.to_string(),
+                    username: input.username.to_string(),
+                    password: input.password.to_string(),
+                    title: input.title.to_string(),
+                    ..store::NewLogin::default()
+                }, Some("app")).map(|login| login.id)
+            } else {
+                inner.store.update_login(&input.id.to_string(), &store::LoginPatch {
+                    origin: Some(input.url.to_string()),
+                    username: Some(input.username.to_string()),
+                    password: Some(input.password.to_string()),
+                    title: Some(input.title.to_string()),
+                    ..store::LoginPatch::default()
+                }).map(|login| login.id)
+            };
+            match result {
+                Err(error) => error.code.into(),
+                Ok(id) => {
+                    let _ = inner.persist();
+                    inner.cred_selected = Some(id);
+                    let ui = weak.unwrap();
+                    Self::refresh_cred(&ui, &inner);
+                    Self::refresh_cred_detail(&ui, &inner, true);
+                    "".into()
+                }
+            }
+        });
+
+        let weak = ui.as_weak();
+        let b24 = Rc::clone(&backend);
+        ui.on_cred_remove_login(move |id| {
+            let mut inner = b24.borrow_mut();
+            Self::bump_activity(&mut inner);
+            inner.store.remove_login(&id.to_string());
+            let _ = inner.persist();
+            inner.cred_selected = None;
+            let ui = weak.unwrap();
+            Self::refresh_cred(&ui, &inner);
+            ui.set_cred_detail_open(false);
+        });
+
+        let weak = ui.as_weak();
+        let b25 = Rc::clone(&backend);
+        ui.on_cred_remove_passkey(move |id| {
+            let mut inner = b25.borrow_mut();
+            Self::bump_activity(&mut inner);
+            let was_selected = inner.cred_selected.as_deref() == Some(id.as_str());
+            inner.store.remove_passkey(&id.to_string());
+            let _ = inner.persist();
+            if was_selected {
+                inner.cred_selected = None;
+            }
+            let ui = weak.unwrap();
+            Self::refresh_cred(&ui, &inner);
+            if was_selected {
+                ui.set_cred_detail_open(false);
+            } else {
+                Self::refresh_cred_detail(&ui, &inner, true);
+            }
+        });
+
+        ui.on_cred_generate(move |length, digits, symbols, words| {
+            let options = GenOptions {
+                length: length.max(1) as usize,
+                digits,
+                symbols,
+                words,
+            };
+            passgen::generate_password(&options).into()
+        });
+
+        let b26 = Rc::clone(&backend);
+        ui.on_cred_prefill(move |id| {
+            let inner = b26.borrow();
+            match inner.store.logins().into_iter().find(|l| l.id == id.to_string()) {
+                Some(login) => CredLoginInput {
+                    id: login.id.into(),
+                    url: login.origin.into(),
+                    username: login.username.into(),
+                    password: login.password.into(),
+                    title: login.title.into(),
+                },
+                None => CredLoginInput {
+                    id: "".into(), url: "".into(), username: "".into(), password: "".into(), title: "".into(),
+                },
+            }
         });
     }
 

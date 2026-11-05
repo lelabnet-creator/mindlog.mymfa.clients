@@ -36,6 +36,9 @@ export component LockScreen inherits Rectangle {
 
     VerticalLayout {
         y: 124px;
+        // Hauteur du contenu : sans elle, le layout remplit l'écran et disperse
+        // champs et bouton jusqu'à les couper sur les grands appareils.
+        height: self.preferred-height;
         width: parent.width - 2 * Theme.gutter;
         x: Theme.gutter;
         spacing: 14px;
