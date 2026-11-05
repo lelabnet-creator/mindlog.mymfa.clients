@@ -1,0 +1,288 @@
+// Nouveau compte : saisie manuelle (clé base32 ou URI otpauth://), vérification
+// en direct, aperçu du code actuel. Le scanner caméra viendra avec JNI (AND-01).
+import { Theme, I18n, AppButton, AppField, Chip, Tile, IconBack } from "common.slint";
+import { NewAccountInput, PreviewInput, PreviewResult } from "structs.slint";
+
+export component NewAccountView inherits Rectangle {
+    in property <[string]> tags: [];
+    callback closed();
+    callback add(NewAccountInput) -> string;
+    callback preview(PreviewInput) -> PreviewResult;
+
+    property <string> secret-or-uri: "";
+    property <string> issuer: "";
+    property <string> account: "";
+    property <string> tag: "";
+    property <string> description: "";
+    property <bool> hotp: false;
+    property <string> algorithm: "SHA1";
+    property <int> digits: 6;
+    property <int> period: 30;
+    property <string> counter: "0";
+    property <bool> advanced: false;
+    property <string> error: "";
+    property <string> code: "";
+    property <string> summary: "";
+    property <string> initials: "?";
+    property <color> tile-color: #5E9488;
+    property <string> period-text: "30";
+
+    background: Theme.bg;
+
+    function counterInt() -> int {
+        return Math.max(0, Math.round(Math.max(0, root.counter.to-float())));
+    }
+    function preview-input() -> PreviewInput {
+        return {
+            secret: root.secret-or-uri,
+            issuer: root.issuer,
+            account: root.account,
+            hotp: root.hotp,
+            algorithm: root.algorithm,
+            digits: root.digits,
+            period: root.period,
+            counter: root.counterInt(),
+        };
+    }
+    function refresh-preview() {
+        let result = root.preview(root.preview-input());
+        root.code = result.code;
+        root.summary = result.summary;
+        root.initials = result.initials;
+        root.tile-color = result.tile-color;
+    }
+
+    Flickable {
+        VerticalLayout {
+            padding: Theme.gutter;
+            spacing: 14px;
+
+            // En-tête retour + titre.
+            HorizontalLayout {
+                spacing: 10px;
+                alignment: start;
+                height: 40px;
+                Rectangle {
+                    width: 40px; height: 40px;
+                    border-radius: 20px;
+                    background: Theme.surface;
+                    border-width: 1px;
+                    border-color: Theme.border;
+                    HorizontalLayout {
+                        alignment: center;
+                        VerticalLayout {
+                            alignment: center;
+                            IconBack { width: 20px; height: 20px; }
+                        }
+                    }
+                    TouchArea { mouse-cursor: pointer; clicked => { root.closed(); } }
+                }
+                Text {
+                    text: I18n.t("new.title");
+                    color: Theme.text;
+                    font-size: 22px;
+                    font-weight: 800;
+                    vertical-alignment: center;
+                }
+            }
+
+            AppField {
+                label: I18n.t("field.secret");
+                placeholder: I18n.t("field.secretPlaceholder");
+                text <=> root.secret-or-uri;
+                edited => { root.refresh-preview(); root.error = ""; }
+            }
+
+            // Aperçu du code actuel.
+            if root.code != "" : Rectangle {
+                height: 108px;
+                border-radius: Theme.radius-card;
+                background: Theme.accent-soft;
+                border-width: 1px;
+                border-color: Theme.accent-line;
+                HorizontalLayout {
+                    padding: 16px;
+                    spacing: 12px;
+                    VerticalLayout {
+                        alignment: center;
+                        Tile {
+                            initials: root.initials;
+                            tile-color: root.tile-color;
+                            width: 48px; height: 48px;
+                        }
+                    }
+                    VerticalLayout {
+                        alignment: center;
+                        spacing: 3px;
+                        Text {
+                            text: root.summary;
+                            color: Theme.text-2;
+                            font-size: 12.5px;
+                        }
+                        Text {
+                            text: root.code;
+                            color: Theme.text;
+                            font-size: 30px;
+                            font-weight: 800;
+                        }
+                    }
+                }
+            }
+
+            AppField {
+                label: I18n.t("field.issuer");
+                placeholder: I18n.t("field.issuerPlaceholder");
+                text <=> root.issuer;
+            }
+            AppField {
+                label: I18n.t("field.account");
+                placeholder: I18n.t("field.accountPlaceholder");
+                text <=> root.account;
+            }
+
+            // Tag existant ou nouveau.
+            Text {
+                text: I18n.t("field.tag");
+                color: Theme.muted;
+                font-size: 12px;
+                font-weight: 600;
+            }
+            HorizontalLayout {
+                spacing: 8px;
+                alignment: start;
+                for t in root.tags : Chip {
+                    label: t;
+                    active: root.tag == t;
+                    clicked => { root.tag = root.tag == t ? "" : t; }
+                }
+            }
+            AppField {
+                label: I18n.t("field.newTag");
+                placeholder: I18n.t("field.newTagPlaceholder");
+                text <=> root.tag;
+            }
+
+            AppField {
+                label: I18n.t("field.description");
+                placeholder: I18n.t("field.descriptionPlaceholder");
+                text <=> root.description;
+            }
+
+            // Options avancées.
+            Rectangle {
+                height: 44px;
+                border-radius: Theme.radius-control;
+                background: Theme.surface;
+                border-width: 1px;
+                border-color: Theme.border;
+                HorizontalLayout {
+                    padding-left: 14px;
+                    padding-right: 14px;
+                    Text {
+                        text: I18n.t("field.advanced");
+                        color: Theme.text-2;
+                        font-size: 14px;
+                        font-weight: 600;
+                        vertical-alignment: center;
+                    }
+                    Rectangle { horizontal-stretch: 1; }
+                    Path {
+                        width: 18px; height: 18px;
+                        viewbox-width: 24; viewbox-height: 24;
+                        commands: root.advanced ? "M6 9l6 6 6-6" : "m9 6 6 6-6 6";
+                        fill: transparent;
+                        stroke: Theme.muted;
+                        stroke-width: 2px;
+                    }
+                }
+                TouchArea { mouse-cursor: pointer; clicked => { root.advanced = !root.advanced; } }
+            }
+            if root.advanced : VerticalLayout {
+                spacing: 12px;
+                Text {
+                    text: I18n.t("field.type");
+                    color: Theme.muted; font-size: 12px; font-weight: 600;
+                }
+                HorizontalLayout {
+                    spacing: 8px;
+                    Chip { label: I18n.t("field.typeTotp"); active: !root.hotp;
+                        clicked => { root.hotp = false; root.refresh-preview(); } }
+                    Chip { label: I18n.t("field.typeHotp"); active: root.hotp;
+                        clicked => { root.hotp = true; root.refresh-preview(); } }
+                }
+                Text {
+                    text: I18n.t("field.algorithm");
+                    color: Theme.muted; font-size: 12px; font-weight: 600;
+                }
+                HorizontalLayout {
+                    spacing: 8px;
+                    Chip { label: "SHA1"; active: root.algorithm == "SHA1";
+                        clicked => { root.algorithm = "SHA1"; root.refresh-preview(); } }
+                    Chip { label: "SHA256"; active: root.algorithm == "SHA256";
+                        clicked => { root.algorithm = "SHA256"; root.refresh-preview(); } }
+                    Chip { label: "SHA512"; active: root.algorithm == "SHA512";
+                        clicked => { root.algorithm = "SHA512"; root.refresh-preview(); } }
+                }
+                Text {
+                    text: I18n.t("field.digits");
+                    color: Theme.muted; font-size: 12px; font-weight: 600;
+                }
+                HorizontalLayout {
+                    spacing: 8px;
+                    Chip { label: "6"; active: root.digits == 6;
+                        clicked => { root.digits = 6; root.refresh-preview(); } }
+                    Chip { label: "7"; active: root.digits == 7;
+                        clicked => { root.digits = 7; root.refresh-preview(); } }
+                    Chip { label: "8"; active: root.digits == 8;
+                        clicked => { root.digits = 8; root.refresh-preview(); } }
+                }
+                if !root.hotp : AppField {
+                    label: I18n.t("field.period");
+                    text <=> root.period-text;
+                }
+                if root.hotp : AppField {
+                    label: I18n.t("field.counter");
+                    text <=> root.counter;
+                    edited(text) => { root.refresh-preview(); }
+                }
+            }
+
+            if error != "" : Text {
+                text: I18n.t("error." + error);
+                color: Theme.danger;
+                font-size: 13px;
+                wrap: word-wrap;
+            }
+
+            AppButton {
+                text: I18n.t("new.submit");
+                primary: true;
+                clicked => {
+                    root.error = root.add({
+                        secret-or-uri: root.secret-or-uri,
+                        issuer: root.issuer,
+                        account: root.account,
+                        tag: root.tag,
+                        description: root.description,
+                        hotp: root.hotp,
+                        algorithm: root.algorithm,
+                        digits: root.digits,
+                        period: root.period,
+                        counter: root.counterInt(),
+                    });
+                    if (root.error == "") { root.closed(); }
+                }
+            }
+            Rectangle { height: 30px; }
+        }
+    }
+
+    changed period-text => {
+        let p = Math.round(Math.max(0, root.period-text.to-float()));
+        root.period = p > 0 ? p : 30;
+        root.refresh-preview();
+    }
+    changed hotp => { root.refresh-preview(); }
+    changed issuer => { root.refresh-preview(); }
+    changed account => { root.refresh-preview(); }
+}

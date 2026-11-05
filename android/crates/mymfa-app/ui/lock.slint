@@ -1,0 +1,137 @@
+// Écran de verrouillage : création du coffre (premier lancement) ou
+// déverrouillage par mot de passe. Comportement de web/js/lock.js.
+import { Theme, I18n, AppButton, AppField, IconLock, IconLogo } from "common.slint";
+
+export component LockScreen inherits Rectangle {
+    in property <int> mode: 0;          // 0 = créer le coffre, 1 = déverrouiller
+    in property <int> wait: 0;          // secondes d'attente après des échecs
+    callback create-vault(string, string) -> string;
+    callback unlock(string) -> string;
+    callback password-strength(string) -> int;
+
+    property <string> password: "";
+    property <string> confirm: "";
+    property <string> error: "";
+    property <int> level: 0;
+    property <bool> busy: false;
+
+    background: Theme.bg;
+
+    Rectangle {
+        y: 40px;
+        x: (parent.width - self.width) / 2;
+        width: 64px; height: 64px;
+        border-radius: 18px;
+        background: Theme.surface;
+        border-width: 1px;
+        border-color: Theme.border;
+        HorizontalLayout {
+            alignment: center;
+            VerticalLayout {
+                alignment: center;
+                IconLogo { width: 34px; height: 34px; }
+            }
+        }
+    }
+
+    VerticalLayout {
+        y: 124px;
+        width: parent.width - 2 * Theme.gutter;
+        x: Theme.gutter;
+        spacing: 14px;
+
+        Text {
+            text: mode == 0 ? I18n.t("security.title.enable") : I18n.t("lock.title");
+            color: Theme.text;
+            font-size: 26px;
+            font-weight: 800;
+            wrap: word-wrap;
+        }
+        Text {
+            text: mode == 0 ? I18n.t("security.enableText") : I18n.t("lock.text");
+            color: Theme.text-2;
+            font-size: 14px;
+            wrap: word-wrap;
+        }
+
+        if mode == 1 : Rectangle { height: 6px; }
+
+        if mode == 0 : AppField {
+            label: I18n.t("security.newPassword");
+            placeholder: "••••••••••";
+            input-type: InputType.password;
+            text <=> root.password;
+            edited => { root.level = root.password-strength(root.password); root.error = ""; }
+        }
+        if mode == 0 : AppField {
+            label: I18n.t("security.confirmPassword");
+            placeholder: "••••••••••";
+            input-type: InputType.password;
+            text <=> root.confirm;
+            accepted(password) => { root.submit(); }
+        }
+        if mode == 0 : Rectangle {
+            height: 30px;
+            HorizontalLayout {
+                spacing: 6px;
+                for i in 4 : Rectangle {
+                    width: 34px; height: 5px;
+                    border-radius: 3px;
+                    background: i < root.level
+                        ? (root.level <= 1 ? Theme.danger : root.level == 2 ? Theme.warn : Theme.accent)
+                        : Theme.ring-track;
+                }
+                Text {
+                    text: root.password != "" && root.level > 0 ? I18n.t("security.strength." + root.level) : "";
+                    color: Theme.muted;
+                    font-size: 12px;
+                    vertical-alignment: center;
+                }
+            }
+        }
+        if mode == 1 : AppField {
+            label: I18n.t("lock.password");
+            placeholder: "••••••••••";
+            input-type: InputType.password;
+            text <=> root.password;
+            accepted(password) => { root.submit(); }
+        }
+
+        if error != "" : Text {
+            text: I18n.t("error." + error);
+            color: Theme.danger;
+            font-size: 13px;
+            wrap: word-wrap;
+        }
+
+        if wait > 0 : Text {
+            text: I18n.tn("security.autoLockMinutes", root.wait);
+            color: Theme.warn;
+            font-size: 13px;
+        }
+
+        AppButton {
+            text: mode == 0 ? I18n.t("security.submit.enable") : I18n.t("lock.unlock");
+            primary: true;
+            enabled: !root.busy && root.wait == 0 && (root.mode == 1 || (root.password != "" && root.confirm != ""));
+            clicked => { root.submit(); }
+        }
+
+        if mode == 0 : Text {
+            text: I18n.t("security.passwordHint");
+            color: Theme.muted;
+            font-size: 12.5px;
+            wrap: word-wrap;
+        }
+    }
+
+    function submit() {
+        if (root.busy) { return; }
+        root.busy = true;
+        root.error = root.mode == 0
+            ? root.create-vault(root.password, root.confirm)
+            : root.unlock(root.password);
+        root.busy = false;
+        if (root.error == "") { root.password = ""; root.confirm = ""; root.level = 0; }
+    }
+}

@@ -1,0 +1,47 @@
+// Structures échangées entre l'UI Slint et le backend Rust.
+
+export struct AccountRow {
+    id: string,
+    issuer: string,        // libellé d'affichage (issuer sinon compte)
+    account: string,
+    tag: string,
+    code: string,          // déjà formaté « 123 456 » ou masqué « ••• ••• »
+    masked: bool,
+    remaining: int,        // secondes avant rotation (TOTP)
+    progress: float,       // 0..1 temps restant / période
+    favorite: bool,
+    hotp: bool,
+    tile-color: color,     // couleur de la tuile (brandColor du web, calculée en Rust)
+    initials: string,
+}
+
+export struct NewAccountInput {
+    secret-or-uri: string,
+    issuer: string,
+    account: string,
+    tag: string,
+    description: string,
+    hotp: bool,
+    algorithm: string,     // SHA1 | SHA256 | SHA512
+    digits: int,
+    period: int,
+    counter: int,
+}
+
+export struct PreviewInput {
+    secret: string,
+    issuer: string,
+    account: string,
+    hotp: bool,
+    algorithm: string,
+    digits: int,
+    period: int,
+    counter: int,
+}
+
+export struct PreviewResult {
+    code: string,          // code formaté, ou "" si la clé est invalide
+    summary: string,       // « TOTP · SHA1 · 6 chiffres · 30 s »
+    initials: string,
+    tile-color: color,
+}

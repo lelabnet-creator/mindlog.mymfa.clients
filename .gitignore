@@ -2,6 +2,9 @@
 node_modules/
 dist/
 
+# Rust : cible de compilation et APK produits par xbuild
+android/target/
+
 # Régénérés par les builds : `npm run vendor` (web) et `npm run build` (extension,
 # qui recopie les modules partagés de web/js et embarque l'app). Une seule
 # source, web/ : les copies ne se versionnent pas.
@@ -11,6 +14,12 @@ extension/src/fonts/
 extension/src/icons/
 extension/src/app/
 
+# Régénérés par `npm run gen` (android) : textes convertis depuis web/js/locales
+# et fixtures d'interopérabilité chiffrées par le vrai vault.js
+android/crates/mymfa-core/src/texts/fr.rs
+android/crates/mymfa-core/src/texts/en.rs
+android/crates/mymfa-core/tests/fixtures/
+
 # Captures laissées par les tests de bout en bout en cas d'échec
 /web/*.png
 /extension/*.png
@@ -19,3 +28,4 @@ extension/src/app/
 .dual-graph/
 .claude/
 CLAUDE.md
+.zcode/

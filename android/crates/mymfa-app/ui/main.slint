@@ -1,0 +1,241 @@
+// Fenêtre principale : écran de verrouillage ou coquille applicative (vues +
+// navigation basse, comme la barre mobile du web). Toutes les propriétés et
+// callbacks « in-out » sont pilotés par le backend Rust (src/backend.rs).
+import { Theme, I18n, IconHome, IconScan, IconKey, IconClock, IconGear } from "common.slint";
+// Ré-export pour le backend Rust (accès via MainWindow::global::<Theme>()).
+export { Theme, I18n } from "common.slint";
+// Police Manrope embarquée (celle de l'app web) — import = enregistrement.
+import "../assets/Manrope.ttf";
+import { AccountRow, NewAccountInput, PreviewInput, PreviewResult } from "structs.slint";
+import { LockScreen } from "lock.slint";
+import { HomeView } from "home.slint";
+import { NewAccountView } from "new.slint";
+import { SettingsView } from "settings.slint";
+
+
+// Composants de la fenêtre (déclarés au niveau fichier : exigé par Slint).
+/* ─ Bouton de navigation ─ */
+component NavButton inherits Rectangle {
+    in property <int> target;
+    in property <string> label-key;
+    in property <bool> active: false;
+    callback selected(int);
+    vertical-stretch: 1;
+    VerticalLayout {
+        alignment: center;
+        spacing: 3px;
+        Rectangle {
+            height: 24px;
+            @children
+        }
+        Text {
+            text: I18n.t(label-key);
+            color: active ? Theme.accent-text : Theme.muted;
+            font-size: 11px;
+            font-weight: active ? 700 : 500;
+            horizontal-alignment: center;
+            overflow: elide;
+        }
+    }
+    TouchArea {
+        mouse-cursor: pointer;
+        clicked => { selected(target); }
+    }
+}
+
+/* ─ Vue d'attente (scanner, mots de passe, activité : jalons suivants) ─ */
+component PlaceholderView inherits Rectangle {
+    in property <int> view-index;
+    VerticalLayout {
+        alignment: center;
+        spacing: 10px;
+        padding: 40px;
+        if view-index == 2 : IconScan { width: 40px; height: 40px; color: Theme.muted; }
+        if view-index == 3 : IconKey { width: 40px; height: 40px; color: Theme.muted; }
+        if view-index == 4 : IconClock { width: 40px; height: 40px; color: Theme.muted; }
+        Text {
+            text: view-index == 2 ? I18n.t("scan.title")
+                : view-index == 3 ? I18n.t("nav.passwords")
+                : I18n.t("nav.activity");
+            color: Theme.text;
+            font-size: 17px;
+            font-weight: 700;
+            horizontal-alignment: center;
+        }
+        Text {
+            text: I18n.t("settings.soon");
+            color: Theme.muted;
+            font-size: 13.5px;
+            horizontal-alignment: center;
+        }
+    }
+}
+
+export component MainWindow inherits Window {
+    title: "myMFA";
+    preferred-width: 420px;
+    preferred-height: 820px;
+    default-font-family: "Manrope";
+    background: Theme.bg;
+
+    /* ─ État piloté par le backend ─ */
+    in-out property <int> lock-mode: 0;        // 0 créer, 1 déverrouiller, 2 déverrouillé
+    in-out property <int> unlock-wait: 0;
+    in-out property <[AccountRow]> accounts: [];
+    in-out property <[string]> tags: [];
+    in-out property <bool> has-accounts: false;
+    in-out property <int> theme: 0;
+    in-out property <bool> hide-codes: false;
+    in-out property <int> auto-lock-min: 5;
+    in-out property <string> app-version: "0.1.0";
+    in-out property <string> toast: "";
+
+    /* ─ Callbacks implémentés en Rust ─ */
+    callback create-vault(string, string) -> string;
+    callback unlock(string) -> string;
+    callback lock-now();
+    callback password-strength(string) -> int;
+    callback add-account(NewAccountInput) -> string;
+    callback preview(PreviewInput) -> PreviewResult;
+    callback card-tapped(string);
+    callback next-code(string);
+    callback toggle-favorite(string);
+    callback change-password(string, string, string) -> string;
+    callback set-theme(int);
+    callback set-locale(string);
+    callback set-hide-codes(bool);
+    callback set-auto-lock(int);
+    callback apply-filter(string, int, string);
+
+    property <int> view: 0;      // 0 codes, 1 nouveau, 2 scanner, 3 mots de passe, 4 activité, 5 réglages
+
+    /* ─ Presse-papiers ─
+     * Slint n'expose pas d'API publique : on passe par les fonctions internes
+     * du TextInput (voie officielle, backend Android inclus). */
+    clipboard-sink := TextInput {
+        visible: false;
+        text: "";
+    }
+    public function copy-to-clipboard(value: string) {
+        clipboard-sink.text = value;
+        clipboard-sink.select-all();
+        clipboard-sink.copy();
+        clipboard-sink.text = "";
+    }
+
+    /* ─ Écran de verrouillage ─ */
+    if root.lock-mode != 2 : LockScreen {
+        mode: root.lock-mode;
+        wait: root.unlock-wait;
+        create-vault(password, confirm) => { return root.create-vault(password, confirm); }
+        unlock(password) => { return root.unlock(password); }
+        password-strength(password) => { return root.password-strength(password); }
+    }
+
+    /* ─ Coquille applicative ─ */
+    if root.lock-mode == 2 : Rectangle {
+        background: Theme.bg;
+
+        VerticalLayout {
+            // Zone de vues.
+            Rectangle {
+                vertical-stretch: 1;
+                if root.view == 0 : HomeView {
+                    accounts: root.accounts;
+                    tags: root.tags;
+                    has-accounts: root.has-accounts;
+                    open-new() => { root.view = 1; }
+                    card-tapped(id) => { root.card-tapped(id); }
+                    favorite(id) => { root.toggle-favorite(id); }
+                    next-code(id) => { root.next-code(id); }
+                    lock-now() => { root.lock-now(); }
+                    apply-filter(query, filter, tag) => { root.apply-filter(query, filter, tag); }
+                }
+                if root.view == 1 : NewAccountView {
+                    tags: root.tags;
+                    closed() => { root.view = 0; }
+                    add(input) => { return root.add-account(input); }
+                    preview(input) => { return root.preview(input); }
+                }
+                if root.view == 2 || root.view == 3 || root.view == 4 : PlaceholderView {
+                    view-index: root.view;
+                }
+                if root.view == 5 : SettingsView {
+                    theme: root.theme;
+                    locale: I18n.locale;
+                    hide-codes: root.hide-codes;
+                    auto-lock-min: root.auto-lock-min;
+                    version: root.app-version;
+                    set-theme(v) => { root.set-theme(v); }
+                    set-locale(l) => { root.set-locale(l); }
+                    set-hide-codes(c) => { root.set-hide-codes(c); }
+                    set-auto-lock(m) => { root.set-auto-lock(m); }
+                    change-password(current, next, confirm) => {
+                        return root.change-password(current, next, confirm);
+                    }
+                }
+            }
+
+            // Navigation basse (5 onglets, comme le web mobile).
+            Rectangle {
+                height: 76px;
+                background: Theme.side;
+                border-width: 0;
+                HorizontalLayout {
+                    padding-left: 8px;
+                    padding-right: 8px;
+                    NavButton {
+                        target: 0; label-key: "nav.home"; active: root.view == 0;
+                        selected(v) => { root.view = v; }
+                        IconHome { width: 24px; height: 24px; color: root.view == 0 ? Theme.accent-text : Theme.muted; }
+                    }
+                    NavButton {
+                        target: 2; label-key: "nav.scan"; active: root.view == 2;
+                        selected(v) => { root.view = v; }
+                        IconScan { width: 24px; height: 24px; color: root.view == 2 ? Theme.accent-text : Theme.muted; }
+                    }
+                    NavButton {
+                        target: 3; label-key: "nav.passwords"; active: root.view == 3;
+                        selected(v) => { root.view = v; }
+                        IconKey { width: 24px; height: 24px; color: root.view == 3 ? Theme.accent-text : Theme.muted; }
+                    }
+                    NavButton {
+                        target: 4; label-key: "nav.activity"; active: root.view == 4;
+                        selected(v) => { root.view = v; }
+                        IconClock { width: 24px; height: 24px; color: root.view == 4 ? Theme.accent-text : Theme.muted; }
+                    }
+                    NavButton {
+                        target: 5; label-key: "nav.settings"; active: root.view == 5;
+                        selected(v) => { root.view = v; }
+                        IconGear { width: 24px; height: 24px; color: root.view == 5 ? Theme.accent-text : Theme.muted; }
+                    }
+                }
+            }
+        }
+    }
+
+    /* ─ Toast ─ */
+    if root.toast != "" : Rectangle {
+        y: parent.height - self.height - 96px;
+        x: (parent.width - self.width) / 2;
+        width: toast-text.preferred-width + 36px;
+        height: 44px;
+        border-radius: 22px;
+        background: Theme.primary-bg;
+        toast-text := Text {
+            text: root.toast;
+            color: Theme.primary-fg;
+            font-size: 13.5px;
+            font-weight: 600;
+            vertical-alignment: center;
+            horizontal-alignment: center;
+        }
+    }
+    Timer {
+        interval: 2.4s;
+        running: root.toast != "";
+        triggered => { root.toast = ""; }
+    }
+
+
+}

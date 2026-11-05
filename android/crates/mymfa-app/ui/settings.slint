@@ -1,0 +1,200 @@
+// Réglages : apparence (thème, langue), sécurité (masquage, verrouillage
+// automatique, changement de mot de passe), à propos.
+import { Theme, I18n, AppButton, AppField, Chip, SwitchRow, SectionCard } from "common.slint";
+
+// Carte de choix de thème (Auto / Clair / Sombre).
+component ThemeCard inherits Rectangle {
+    in property <int> value;
+    in property <string> label;
+    in property <int> current;
+    callback selected(int);
+    vertical-stretch: 1;
+    height: 60px;
+    border-radius: Theme.radius-control;
+    background: current == value ? Theme.accent-soft : Theme.surface-2;
+    border-width: 1px;
+    border-color: current == value ? Theme.accent-line : Theme.border;
+    VerticalLayout {
+        alignment: center;
+        spacing: 2px;
+        Text {
+            text: label;
+            color: current == value ? Theme.accent-text : Theme.text-2;
+            font-size: 14px;
+            font-weight: 700;
+            horizontal-alignment: center;
+        }
+        Text {
+            text: current == value ? "✓" : "";
+            color: Theme.accent-text;
+            font-size: 13px;
+            horizontal-alignment: center;
+        }
+    }
+    TouchArea { mouse-cursor: pointer; clicked => { selected(value); } }
+}
+
+export component SettingsView inherits Rectangle {
+    in property <int> theme: 0;           // 0 auto, 1 clair, 2 sombre
+    in property <string> locale: "fr";
+    in property <bool> hide-codes: false;
+    in property <int> auto-lock-min: 5;
+    in property <string> version: "";
+    callback set-theme(int);
+    callback set-locale(string);
+    callback set-hide-codes(bool);
+    callback set-auto-lock(int);
+    callback change-password(string, string, string) -> string;
+
+    property <string> current-password: "";
+    property <string> new-password: "";
+    property <string> confirm-password: "";
+    property <string> password-error: "";
+    property <bool> password-done: false;
+
+    background: Theme.bg;
+
+    Flickable {
+        VerticalLayout {
+            padding: Theme.gutter;
+            spacing: 16px;
+
+            Text {
+                text: I18n.t("settings.title");
+                color: Theme.text;
+                font-size: 22px;
+                font-weight: 800;
+            }
+
+            /* ─ Apparence ─ */
+            SectionCard {
+                title: I18n.t("settings.appearance");
+                Text {
+                    text: I18n.t("theme.group");
+                    color: Theme.muted; font-size: 12px; font-weight: 600;
+                }
+                HorizontalLayout {
+                    spacing: 8px;
+                    ThemeCard { value: 0; label: I18n.t("theme.auto"); current: root.theme;
+                        selected(v) => { root.set-theme(v); } }
+                    ThemeCard { value: 1; label: I18n.t("theme.light"); current: root.theme;
+                        selected(v) => { root.set-theme(v); } }
+                    ThemeCard { value: 2; label: I18n.t("theme.dark"); current: root.theme;
+                        selected(v) => { root.set-theme(v); } }
+                }
+                Text {
+                    text: I18n.t("settings.language");
+                    color: Theme.muted; font-size: 12px; font-weight: 600;
+                }
+                HorizontalLayout {
+                    spacing: 8px;
+                    Chip { label: "Français"; active: root.locale == "fr";
+                        clicked => { root.set-locale("fr"); } }
+                    Chip { label: "English"; active: root.locale == "en";
+                        clicked => { root.set-locale("en"); } }
+                }
+            }
+
+            /* ─ Sécurité ─ */
+            SectionCard {
+                title: I18n.t("settings.security");
+                SwitchRow {
+                    title: I18n.t("settings.hideCodes");
+                    subtitle: I18n.t("settings.hideCodesText");
+                    checked: root.hide-codes;
+                    toggled(checked) => { root.set-hide-codes(checked); }
+                }
+                Text {
+                    text: I18n.t("security.autoLock");
+                    color: Theme.muted; font-size: 12px; font-weight: 600;
+                }
+                HorizontalLayout {
+                    spacing: 8px;
+                    Chip { label: I18n.tn("security.autoLockMinutes", 1);
+                        active: root.auto-lock-min == 1;
+                        clicked => { root.set-auto-lock(1); } }
+                    Chip { label: I18n.tn("security.autoLockMinutes", 5);
+                        active: root.auto-lock-min == 5;
+                        clicked => { root.set-auto-lock(5); } }
+                    Chip { label: I18n.tn("security.autoLockMinutes", 15);
+                        active: root.auto-lock-min == 15;
+                        clicked => { root.set-auto-lock(15); } }
+                    Chip { label: I18n.tn("security.autoLockMinutes", 60);
+                        active: root.auto-lock-min == 60;
+                        clicked => { root.set-auto-lock(60); } }
+                    Chip { label: I18n.t("security.autoLockNever");
+                        active: root.auto-lock-min == 0;
+                        clicked => { root.set-auto-lock(0); } }
+                }
+
+                Text {
+                    text: I18n.t("security.title.change");
+                    color: Theme.text;
+                    font-size: 15px;
+                    font-weight: 700;
+                }
+                AppField {
+                    label: I18n.t("security.currentPassword");
+                    input-type: InputType.password;
+                    text <=> root.current-password;
+                }
+                AppField {
+                    label: I18n.t("security.newPassword");
+                    input-type: InputType.password;
+                    text <=> root.new-password;
+                }
+                AppField {
+                    label: I18n.t("security.confirmPassword");
+                    input-type: InputType.password;
+                    text <=> root.confirm-password;
+                    accepted(password) => { root.submit-password(); }
+                }
+                if root.password-error != "" : Text {
+                    text: I18n.t("error." + root.password-error);
+                    color: Theme.danger;
+                    font-size: 13px;
+                    wrap: word-wrap;
+                }
+                if root.password-done : Text {
+                    text: I18n.t("security.done.change");
+                    color: Theme.accent-text;
+                    font-size: 13px;
+                }
+                AppButton {
+                    text: I18n.t("security.submit.change");
+                    enabled: root.current-password != "" && root.new-password != "" && root.confirm-password != "";
+                    clicked => { root.submit-password(); }
+                }
+            }
+
+            /* ─ À propos / à venir ─ */
+            SectionCard {
+                title: I18n.t("meta.name");
+                Text {
+                    text: I18n.t("settings.soon") + " · " + I18n.t("nav.scan") + " · " + I18n.t("nav.passwords") + " · " + I18n.t("nav.dashboard") + " · " + I18n.t("settings.data");
+                    color: Theme.muted;
+                    font-size: 13px;
+                    wrap: word-wrap;
+                }
+                Text {
+                    text: I18n.t1("settings.foot", root.version);
+                    color: Theme.muted;
+                    font-size: 12px;
+                    wrap: word-wrap;
+                }
+            }
+            Rectangle { height: 30px; }
+        }
+    }
+
+    function submit-password() {
+        root.password-done = false;
+        root.password-error = root.change-password(root.current-password, root.new-password, root.confirm-password);
+        if (root.password-error == "") {
+            root.password-done = true;
+            root.current-password = "";
+            root.new-password = "";
+            root.confirm-password = "";
+        }
+    }
+}

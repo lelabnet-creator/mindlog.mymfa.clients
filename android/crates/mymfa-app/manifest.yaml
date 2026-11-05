@@ -1,0 +1,13 @@
+# Configuration xbuild (x) du client Android myMFA.
+#   x build --manifest-path crates/mymfa-app/Cargo.toml --platform android --arch arm64 --format apk --release
+icon: assets/icon.png
+
+android:
+  manifest:
+    package: today.mindlog.mymfa
+    sdk:
+      min_sdk_version: 26   # minimum Slint
+      target_sdk_version: 33   # plafond du NDK épinglé par xbuild
+    application:
+      label: myMFA
+    # Socle v1 : aucune permission — l'app est 100 % hors ligne.

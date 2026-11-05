@@ -1,0 +1,368 @@
+// Socle commun : thème (palette transposée de web/css/style.css), i18n (textes
+// web/js/locales via le cœur Rust), icônes (tracés SVG du web) et composants.
+import { AccountRow } from "structs.slint";
+
+/* ───── Palette ───── */
+
+export global Theme {
+    // Renseigné par le backend (réglage auto/clair/sombre ; auto → sombre en v1).
+    in-out property <bool> light: false;
+
+    out property <color> bg:          light ? #F2F5F9 : #070B13;
+    out property <color> side:        light ? #FFFFFF : #0A0F18;
+    out property <color> surface:     light ? #FFFFFF : #0E1420;
+    out property <color> surface-2:   light ? #EEF2F7 : #141B29;
+    out property <color> border:      light ? #E1E6EE : #1A2231;
+    out property <color> border-2:    light ? #D2D9E3 : #283244;
+    out property <color> text:        light ? #0B1220 : #EEF2F8;
+    out property <color> text-2:      light ? #2E3A4C : #C3CBD8;
+    out property <color> muted:       light ? #566275 : #8E9AAE;
+    out property <color> accent:      light ? #0E9488 : #5EE6CF;
+    out property <color> accent-text: light ? #0B7A72 : #5EE6CF;
+    out property <color> accent-soft: light ? #E1F5F2 : #0F2A2A;
+    out property <color> accent-line: light ? #9ED9D1 : #1F5C58;
+    out property <color> warn:        light ? #9A5800 : #F2B65A;
+    out property <color> danger:      light ? #B42318 : #FF8A8A;
+    out property <color> danger-soft: light ? #FDECEC : #2E1A1E;
+    out property <color> primary-bg:  light ? #0B1220 : #F4F7FB;
+    out property <color> primary-fg:  light ? #FFFFFF : #0A0F1A;
+    out property <color> ring-track:  light ? #E1E6EE : #1F2A3A;
+    out property <color> chip-bg:     light ? #FFFFFF : #111826;
+    out property <color> tile-bg:     light ? #FFFFFF : #F4F7FB;
+    out property <color> tile-border: light ? #E1E6EE : transparent;
+
+    out property <length> radius-card: 20px;
+    out property <length> radius-control: 14px;
+    out property <length> gutter: 16px;
+    out property <length> tap: 44px;
+}
+
+/* ───── i18n ───── */
+
+// Les textes viennent du cœur (web/js/locales via mymfa-core::texts). La lecture
+// de `locale` dans t()/tn() rend les liaisons réactives au changement de langue.
+export global I18n {
+    in-out property <string> locale: "fr";
+    pure callback t-impl(string, string) -> string;
+    pure callback tn-impl(string, int, string) -> string;
+    pure callback t1-impl(string, string, string) -> string;
+
+    pure public function t(key: string) -> string {
+        if (locale == "@@") { return key; }
+        return t-impl(key, locale);
+    }
+    pure public function tn(key: string, n: int) -> string {
+        if (locale == "@@") { return key; }
+        return tn-impl(key, n, locale);
+    }
+    // Texte à un paramètre : `t1("settings.foot", "0.1.0")` remplace {version}.
+    pure public function t1(key: string, param: string) -> string {
+        if (locale == "@@") { return key; }
+        return t1-impl(key, param, locale);
+    }
+}
+
+/* ───── Icônes (tracés 24×24 de l'app web) ───── */
+
+export component IconLogo inherits Path {
+    in property <color> color: Theme.accent;
+    viewbox-width: 26; viewbox-height: 26;
+    commands: "M3 19V10.5a5.75 5.75 0 0 1 11.5 0V19M14.5 10.5a5.75 5.75 0 0 1 11.5 0V19";
+    fill: transparent; stroke: color; stroke-width: 3.4px;
+}
+export component IconHome inherits Path {
+    in property <color> color: Theme.muted;
+    viewbox-width: 24; viewbox-height: 24;
+    commands: "M12 3.2 3 10.4V20a1 1 0 0 0 1 1h5.5v-6h5v6H20a1 1 0 0 0 1-1v-9.6z";
+    fill: color; stroke: transparent;
+}
+export component IconScan inherits Path {
+    in property <color> color: Theme.muted;
+    viewbox-width: 24; viewbox-height: 24;
+    commands: "M3 8V5a2 2 0 0 1 2-2h3M16 3h3a2 2 0 0 1 2 2v3M21 16v3a2 2 0 0 1-2 2h-3M8 21H5a2 2 0 0 1-2-2v-3M7 12h10";
+    fill: transparent; stroke: color; stroke-width: 1.8px;
+}
+export component IconKey inherits Path {
+    in property <color> color: Theme.muted;
+    viewbox-width: 24; viewbox-height: 24;
+    commands: "M15 7a4 4 0 1 1-3.9 4.9L4 19v2h3v-2h2v-2h2l1.1-1.1A4 4 0 0 1 15 7z";
+    fill: transparent; stroke: color; stroke-width: 1.8px;
+}
+export component IconClock {
+    in property <color> color: Theme.muted;
+    Path {
+        width: 100%; height: 100%;
+        viewbox-width: 24; viewbox-height: 24;
+        commands: "M12 7v5l3 2";
+        fill: transparent; stroke: color; stroke-width: 1.8px;
+    }
+    Path {
+        width: 100%; height: 100%;
+        viewbox-width: 24; viewbox-height: 24;
+        commands: "M12 3 4 6v6c0 4.5 3.4 8.3 8 9 4.6-.7 8-4.5 8-9V6z";
+        fill: transparent; stroke: color; stroke-width: 1.8px;
+    }
+}
+export component IconGear inherits Path {
+    in property <color> color: Theme.muted;
+    viewbox-width: 24; viewbox-height: 24;
+    commands: "M19.4 15a1.7 1.7 0 0 0 .3 1.8l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-1.8-.3 1.7 1.7 0 0 0-1 1.5V21a2 2 0 1 1-4 0v-.1a1.7 1.7 0 0 0-1.1-1.5 1.7 1.7 0 0 0-1.8.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.7 1.7 0 0 0 .3-1.8 1.7 1.7 0 0 0-1.5-1H3a2 2 0 1 1 0-4h.1a1.7 1.7 0 0 0 1.5-1.1 1.7 1.7 0 0 0-.3-1.8l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.7 1.7 0 0 0 1.8.3H9a1.7 1.7 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.1a1.7 1.7 0 0 0 1 1.5 1.7 1.7 0 0 0 1.8-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.7 1.7 0 0 0-.3 1.8V9a1.7 1.7 0 0 0 1.5 1H21a2 2 0 1 1 0 4h-.1a1.7 1.7 0 0 0-1.5 1z";
+    fill: transparent; stroke: color; stroke-width: 1.5px;
+}
+export component IconLock inherits Path {
+    in property <color> color: Theme.muted;
+    viewbox-width: 24; viewbox-height: 24;
+    commands: "M8 10V7a4 4 0 0 1 8 0v3M5 10h14v11H5z";
+    fill: transparent; stroke: color; stroke-width: 1.8px;
+}
+export component IconSearch inherits Path {
+    in property <color> color: Theme.muted;
+    viewbox-width: 24; viewbox-height: 24;
+    commands: "M11 4a7 7 0 0 1 0 14 7 7 0 0 1 0-14zM20 20l-3.5-3.5";
+    fill: transparent; stroke: color; stroke-width: 1.8px;
+}
+export component IconPlus inherits Path {
+    in property <color> color: Theme.muted;
+    viewbox-width: 24; viewbox-height: 24;
+    commands: "M12 5v14M5 12h14";
+    fill: transparent; stroke: color; stroke-width: 1.8px;
+}
+export component IconCopy inherits Path {
+    in property <color> color: Theme.muted;
+    viewbox-width: 24; viewbox-height: 24;
+    commands: "M3 8V5a2 2 0 0 1 2-2h3M16 3h3a2 2 0 0 1 2 2v3M21 16v3a2 2 0 0 1-2 2h-3M8 21H5a2 2 0 0 1-2-2v-3M13 7h4v2M7 17v-2h2";
+    fill: transparent; stroke: color; stroke-width: 1.8px;
+}
+export component IconStar inherits Path {
+    in property <bool> filled: false;
+    in property <color> color: filled ? Theme.warn : Theme.muted;
+    viewbox-width: 24; viewbox-height: 24;
+    commands: "m12 3 2.7 5.6 6.1.9-4.4 4.3 1 6.1L12 17l-5.4 2.9 1-6.1-4.4-4.3 6.1-.9z";
+    fill: filled ? Theme.warn : transparent;
+    stroke: color; stroke-width: 1.6px;
+}
+export component IconBack inherits Path {
+    in property <color> color: Theme.text-2;
+    viewbox-width: 24; viewbox-height: 24;
+    commands: "M15 6l-6 6 6 6";
+    fill: transparent; stroke: color; stroke-width: 2px;
+}
+export component IconTrash inherits Path {
+    in property <color> color: Theme.danger;
+    viewbox-width: 24; viewbox-height: 24;
+    commands: "M4 7h16M10 11v6M14 11v6M6 7l1 13h10l1-13M9 7V4h6v3";
+    fill: transparent; stroke: color; stroke-width: 1.7px;
+}
+export component IconCheck inherits Path {
+    in property <color> color: Theme.accent;
+    viewbox-width: 24; viewbox-height: 24;
+    commands: "m5 12 5 5 9-10";
+    fill: transparent; stroke: color; stroke-width: 2px;
+}
+export component IconCloudUp inherits Path {
+    in property <color> color: Theme.muted;
+    viewbox-width: 24; viewbox-height: 24;
+    commands: "M7 18a4.5 4.5 0 0 1-.6-8.96A6 6 0 0 1 18 8.5a4.5 4.5 0 0 1-.5 9.5zM12 11v6M9.5 13.5 12 11l2.5 2.5";
+    fill: transparent; stroke: color; stroke-width: 1.7px;
+}
+export component IconRefresh inherits Path {
+    in property <color> color: Theme.muted;
+    viewbox-width: 24; viewbox-height: 24;
+    commands: "M20 12a8 8 0 1 1-2.3-5.7M20 4v5h-5";
+    fill: transparent; stroke: color; stroke-width: 1.8px;
+}
+
+/* ───── Composants ───── */
+
+// Bouton plein (primaire inversé, comme le web) ou discret.
+export component AppButton inherits Rectangle {
+    in property <string> text;
+    in property <bool> primary: false;
+    in property <bool> danger: false;
+    in property <bool> enabled: true;
+    in property <length> min-h: Theme.tap;
+    callback clicked;
+    border-radius: Theme.radius-control;
+    background: !enabled ? Theme.surface-2
+        : primary ? (danger ? Theme.danger : Theme.primary-bg)
+        : danger ? Theme.danger-soft
+        : Theme.surface-2;
+    height: min-h;
+    HorizontalLayout {
+        alignment: center;
+        padding-top: 12px;
+        padding-bottom: 12px;
+        Text {
+            text: root.text;
+            vertical-alignment: center;
+            color: !enabled ? Theme.muted
+                : primary ? (danger ? #FFFFFF : Theme.primary-fg)
+                : danger ? Theme.danger : Theme.text-2;
+            font-weight: 700;
+            font-size: 15px;
+        }
+    }
+    ta := TouchArea {
+        enabled: root.enabled;
+        mouse-cursor: pointer;
+        clicked => { root.clicked(); }
+    }
+}
+
+// Puce de filtre (Tous / Favoris / tags).
+export component Chip inherits Rectangle {
+    in property <string> label;
+    in property <bool> active: false;
+    callback clicked;
+    border-radius: 12px;
+    height: 36px;
+    background: active ? Theme.accent-soft : Theme.chip-bg;
+    border-width: 1px;
+    border-color: active ? Theme.accent-line : Theme.border;
+    HorizontalLayout {
+        padding-left: 14px;
+                    padding-right: 14px;
+        alignment: center;
+        Text {
+            text: label;
+            vertical-alignment: center;
+            color: active ? Theme.accent-text : Theme.text-2;
+            font-size: 13px;
+            font-weight: active ? 700 : 500;
+        }
+    }
+    ta := TouchArea { mouse-cursor: pointer; clicked => { root.clicked(); } }
+}
+
+// Tuile à initiales, couleur stable par service (comme brandColor du web).
+export component Tile inherits Rectangle {
+    in property <string> initials;
+    in property <color> tile-color: Theme.muted;
+    width: self.height;
+    border-radius: Theme.radius-control;
+    background: Theme.tile-bg;
+    border-width: 1px;
+    border-color: Theme.tile-border;
+    Text {
+        text: initials;
+        color: tile-color;
+        font-weight: 800;
+        font-size: 15px;
+    }
+}
+
+// Champ de saisie étiqueté (bâti sur TextInput pour reprendre le dessin du web).
+export component AppField inherits Rectangle {
+    in property <string> label;
+    in property <string> placeholder;
+    in property <InputType> input-type: InputType.text;
+    in property <string> error: "";
+    in-out property <string> text <=> input.text;
+    in property <bool> enabled: true;
+    callback accepted(string);
+    callback edited(string);
+    height: 76px;
+    border-radius: Theme.radius-control;
+    background: Theme.surface;
+    border-width: 1px;
+    border-color: input.has-focus ? Theme.accent-line : (error != "" ? Theme.danger : Theme.border);
+    VerticalLayout {
+        padding: 12px;
+        spacing: 4px;
+        Text {
+            text: label;
+            color: Theme.muted;
+            font-size: 12px;
+            font-weight: 600;
+        }
+        input := TextInput {
+            color: Theme.text;
+            font-size: 15px;
+            input-type: root.input-type;
+            enabled: root.enabled;
+            edited => { root.edited(self.text); }
+            accepted => { root.accepted(self.text); }
+        }
+        // Placeholder dessiné par-dessus, à la manière du LineEdit standard.
+        Text {
+            text: root.text == "" && input.preedit-text == "" ? root.placeholder : "";
+            color: Theme.muted;
+            font-size: 15px;
+        }
+    }
+}
+
+// Interrupteur avec libellés (Réglages).
+export component SwitchRow inherits Rectangle {
+    in property <string> title;
+    in property <string> subtitle;
+    in-out property <bool> checked;
+    callback toggled(bool);
+    height: 64px;
+    border-radius: Theme.radius-control;
+    background: Theme.surface;
+    border-width: 1px;
+    border-color: Theme.border;
+    HorizontalLayout {
+        padding-left: 16px;
+        padding-right: 16px;
+        spacing: 12px;
+        VerticalLayout {
+            alignment: center;
+            spacing: 2px;
+            Text {
+                text: title;
+                color: Theme.text;
+                font-size: 15px;
+                font-weight: 600;
+                vertical-alignment: center;
+            }
+            Text {
+                text: subtitle;
+                color: Theme.muted;
+                font-size: 12.5px;
+                vertical-alignment: center;
+                overflow: elide;
+            }
+        }
+        Rectangle { horizontal-stretch: 0; }
+        sw := Rectangle {
+            width: 46px; height: 28px;
+            border-radius: 14px;
+            background: root.checked ? Theme.accent : Theme.surface-2;
+            border-width: 1px;
+            border-color: root.checked ? Theme.accent-line : Theme.border-2;
+            Rectangle {
+                x: root.checked ? parent.width - self.width - 3px : 3px;
+                y: (parent.height - self.height) / 2;
+                width: 22px; height: 22px;
+                border-radius: 11px;
+                background: root.checked ? #FFFFFF : Theme.muted;
+            }
+        }
+    }
+    ta := TouchArea {
+        mouse-cursor: pointer;
+        clicked => { root.checked = !root.checked; root.toggled(root.checked); }
+    }
+}
+
+// Carte de section (Réglages).
+export component SectionCard inherits Rectangle {
+    in property <string> title;
+    border-radius: Theme.radius-card;
+    background: Theme.surface;
+    border-width: 1px;
+    border-color: Theme.border;
+    VerticalLayout {
+        padding: 18px;
+        spacing: 12px;
+        if title != "": Text {
+            text: title;
+            color: Theme.text;
+            font-size: 16px;
+            font-weight: 700;
+        }
+        @children
+    }
+}

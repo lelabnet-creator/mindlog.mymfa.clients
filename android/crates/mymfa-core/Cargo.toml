@@ -1,0 +1,19 @@
+[package]
+name = "mymfa-core"
+description = "Cœur myMFA : OTP, coffre chiffré, fusion et modèles — compatibles octet pour octet avec l'app web (../web/js)"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[dependencies]
+hmac = "0.12"
+sha1 = "0.10"
+sha2 = "0.10"
+aes-gcm = "0.10"
+pbkdf2 = "0.12"
+hkdf = "0.12"
+serde = { workspace = true }
+serde_json = { workspace = true }
+unicode-normalization = "0.1"
+url = "2"
+getrandom = "0.3"

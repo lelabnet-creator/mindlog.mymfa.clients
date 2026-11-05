@@ -7,7 +7,7 @@ suite mindlog.today. Un sous-dossier par client :
 |---|---|
 | [`web/`](web/README.md) | L'application web (100 % navigateur). C'est elle que sert `https://app.mymfa.mindlog.today/`. |
 | [`extension/`](extension/README.md) | L'extension Chromium, autonome : elle embarque l'app web complète, et propose codes, mots de passe et passkeys sur les sites. |
-| [`android/`](android/README.md) | L'application Android native, en Slint (Rust) — à venir. |
+| [`android/`](android/README.md) | L'application Android native, en Slint (Rust) : cœur partagé compatible octet pour octet avec le coffre du web, vue Codes, ajout manuel, réglages. |
 
 Chaque client est autonome : ses dépendances, ses scripts et ses tests vivent
 dans son dossier, et les commandes s'y lancent (`cd web && npm start`).

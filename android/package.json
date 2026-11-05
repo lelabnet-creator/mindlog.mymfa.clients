@@ -1,0 +1,14 @@
+{
+  "name": "mymfa-android",
+  "private": true,
+  "version": "0.1.0",
+  "description": "Outils du client Android myMFA (génération depuis web/, tests d'interopérabilité). Aucune dépendance Node.",
+  "type": "module",
+  "scripts": {
+    "gen": "node scripts/sync-locales.mjs && node scripts/make-fixtures.mjs",
+    "test": "npm run gen && cargo test && node scripts/interop-check.mjs",
+    "interop": "cargo test --test interop_out && node scripts/interop-check.mjs",
+    "run": "cargo run -p mymfa-app",
+    "android": "x build --platform android --arch arm64 --arch x86_64 --format apk --release"
+  }
+}

@@ -1,0 +1,19 @@
+[package]
+name = "mymfa-app"
+description = "Application Android myMFA — interface Slint sur le cœur mymfa-core"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[dependencies]
+mymfa-core = { path = "../mymfa-core" }
+slint = { version = "1.18", features = ["backend-android-activity-06"] }
+serde = { workspace = true }
+serde_json = { workspace = true }
+
+[build-dependencies]
+slint-build = "1.18"
+
+# Bibliothèque chargée par l'APK Android (android_main) ET par l'exécutable bureau.
+[lib]
+crate-type = ["lib", "cdylib"]
