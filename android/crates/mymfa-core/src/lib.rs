@@ -13,6 +13,7 @@ pub mod passgen;
 pub mod store;
 pub mod sync;
 pub mod sync2;
+pub mod temps;
 #[cfg(feature = "texts")]
 pub mod texts;
 pub mod vault;

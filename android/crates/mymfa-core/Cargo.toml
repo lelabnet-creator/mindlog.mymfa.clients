@@ -11,6 +11,9 @@ publish.workspace = true
 # construit sans Node.
 default = ["texts"]
 texts = []
+# Sonde NTS (SYN-08, RFC 8915 vers time.cloudflare.com) : le démon Linux
+# l'active ; le cœur reste léger pour Android sans elle.
+nts = ["dep:rkik-nts"]
 
 [dependencies]
 hmac = "0.12"
@@ -24,3 +27,8 @@ serde_json = { workspace = true }
 unicode-normalization = "0.1"
 url = "2"
 getrandom = "0.3"
+rkik-nts = { version = "1.4", optional = true }
+
+# Piloter la sonde NTS dans les tests (feature nts) : jamais dans la bibliothèque.
+[dev-dependencies]
+tokio = { version = "1", features = ["rt", "time", "net", "macros"] }
