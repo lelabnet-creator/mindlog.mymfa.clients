@@ -16,6 +16,7 @@ const here = dirname(fileURLToPath(import.meta.url));
 const require = createRequire(import.meta.url);
 const Vault = require(join('..', '..', 'web', 'js', 'vault.js'));
 const Sync = require(join('..', '..', 'web', 'js', 'sync.js'));
+const Sync2 = require(join('..', '..', 'web', 'js', 'sync2.js'));
 const outDir = join(here, '..', 'crates', 'mymfa-core', 'tests', 'fixtures');
 
 const FAST = { iterations: 1000 };
@@ -139,9 +140,193 @@ function syncCases() {
   };
 }
 
+/* ───── Synchro v2 (SYN-07) : fusions calculées par web/js/sync2.js, rejouées
+ * par crates/mymfa-core/tests/sync2_interop.rs. Chaque cas donne l'état initial
+ * de l'appareil (horloge, repère), les deux copies et le résultat attendu (les
+ * deux côtés comparent le JSON parsé : l'ordre des clés n'engage pas). Les
+ * rapports ne sont comparés que sur les genres d'entrées — leurs textes portent
+ * l'heure de la fusion. */
+const T2 = 1794405900000; // 2026-11-11T14:05:00.000Z
+const MINUT_MS = 60000;
+
+function stamp(l, c, appareil) {
+  return Sync2.encoderTampon(l, c, appareil);
+}
+
+function compte2(id, issuer, date, extra = {}) {
+  return {
+    id, type: 'totp', issuer, account: 'moi@example.net', secret: 'JBSWY3DPEHPK3PXP',
+    algorithm: 'SHA1', digits: 6, period: 30, counter: 0, tag: '', description: '',
+    favorite: false, createdAt: date, updatedAt: date, ...extra,
+  };
+}
+
+/** Éditer un champ d'une copie v2 : tampon = horloge de l'appareil, plafonné au
+ * tampon actuel du champ (même règle que l'app). */
+function editer(copieLocale, id, champ, valeur, tampon) {
+  const items = JSON.parse(copieLocale['mymfa.accounts.v1']);
+  const item = items.find((a) => a.id === id);
+  item[champ] = valeur;
+  item.h = { ...(item.h || {}), [champ]: tampon };
+  item.updatedAt = Sync2.isoDepuisTampon(
+    Object.values(item.h).reduce((a, b) => (b > a ? b : a), '')
+  );
+  copieLocale['mymfa.accounts.v1'] = JSON.stringify(items);
+}
+
+function sync2Cases() {
+  const maintenant = T2;
+  const debut = { l: T2 - MINUT_MS, c: 0 };
+  const cases = [];
+  const ajouter = (nom, locale, distante, etat, construire) => {
+    // La fusion JS calcule le résultat attendu ; `construire` peut vérifier des
+    // attentes supplémentaires (genres de rapport, traces) sur place.
+    const e = { appareil: 'pc', horloge: { ...debut, ...etat?.horloge }, repere: etat?.repere || '' };
+    const { donnees, rapport } = Sync2.fusion(locale, distante, { appareil: e.appareil, horloge: new Sync2.Horloge(e.horloge.l), repere: e.repere, }, maintenant);
+    if (e.horloge.c !== undefined) { /* l'horloge d'entrée est citée telle quelle */ }
+    const cas = {
+      name: nom,
+      locale,
+      distante,
+      etat: { appareil: e.appareil, horloge: e.horloge, repere: e.repere },
+      maintenant,
+      attendu: donnees,
+      aEnvoyer: rapport.aEnvoyer,
+      genres: rapport.entrees.map((x) => x.genre).sort(),
+    };
+    if (construire) construire(cas, rapport);
+    cases.push(cas);
+    return cas;
+  };
+
+  // Deux copies v1 (avant migration) : union par id, champ le plus récent gagne.
+  ajouter(
+    'v2-union-simple',
+    { 'mymfa.accounts.v1': JSON.stringify([compte2('a1', 'GitHub', '2026-01-01T00:00:00.000Z')]) },
+    { 'mymfa.accounts.v1': JSON.stringify([compte2('a2', 'OVH', '2026-02-01T00:00:00.000Z')]) },
+  );
+
+  // Copies déjà migrées : deux champs édités des deux côtés → les deux survivent.
+  {
+    const locale = Sync2.migrer(
+      { 'mymfa.accounts.v1': JSON.stringify([compte2('a1', 'GitHub', '2026-01-01T00:00:00.000Z')]) },
+      maintenant, 'pc'
+    );
+    const distante = Sync2.migrer(
+      { 'mymfa.accounts.v1': JSON.stringify([compte2('a1', 'GitHub', '2026-01-01T00:00:00.000Z')]) },
+      maintenant, 'tel'
+    );
+    editer(locale, 'a1', 'tag', 'travail', stamp(T2, 1, 'pc'));
+    editer(distante, 'a1', 'description', 'perso', stamp(T2, 1, 'tel'));
+    ajouter('v2-deux-champs-en-parallele', locale, distante);
+  }
+
+  // Le même champ des deux côtés : le plus grand tampon gagne, conflit signalé.
+  {
+    const locale = Sync2.migrer({ 'mymfa.accounts.v1': JSON.stringify([compte2('a1', 'GitHub', '2026-01-01T00:00:00.000Z')]) }, maintenant, 'pc');
+    const distante = Sync2.migrer({ 'mymfa.accounts.v1': JSON.stringify([compte2('a1', 'GitHub', '2026-01-01T00:00:00.000Z')]) }, maintenant, 'tel');
+    editer(locale, 'a1', 'issuer', 'Côté PC', stamp(T2 + MINUT_MS, 0, 'pc'));
+    editer(distante, 'a1', 'issuer', 'Côté téléphone', stamp(T2, 0, 'tel'));
+    ajouter('v2-conflit-meme-champ', locale, distante, null, (cas) => {
+      if (!cas.genres.includes('conflit')) throw new Error('conflit attendu');
+    });
+  }
+
+  // Suppression d'un côté, modification plus récente de l'autre : ça revit.
+  {
+    const locale = Sync2.migrer({ 'mymfa.accounts.v1': JSON.stringify([compte2('a1', 'GitHub', '2026-01-01T00:00:00.000Z')]) }, maintenant, 'pc');
+    const distante = Sync2.migrer({ 'mymfa.accounts.v1': JSON.stringify([compte2('a1', 'GitHub', '2026-01-01T00:00:00.000Z')]) }, maintenant, 'tel');
+    const items = JSON.parse(locale['mymfa.accounts.v1']);
+    items[0].t = stamp(T2, 1, 'pc');
+    locale['mymfa.accounts.v1'] = JSON.stringify(items);
+    editer(distante, 'a1', 'description', 'clé de secours', stamp(T2 + 2 * MINUT_MS, 0, 'tel'));
+    ajouter('v2-modifie-apres-suppression', locale, distante, null, (cas) => {
+      const item = JSON.parse(cas.attendu['mymfa.accounts.v1'])[0];
+      if (!Sync2.estVivant(item)) throw new Error('la modification postérieure fait revivre');
+    });
+  }
+
+  // HOTP : valeur maximale, quel que soit le tampon.
+  {
+    const locale = Sync2.migrer({ 'mymfa.accounts.v1': JSON.stringify([{ ...compte2('a1', 'GitHub', '2026-01-01T00:00:00.000Z'), counter: 5 }]) }, maintenant, 'pc');
+    const distante = Sync2.migrer({ 'mymfa.accounts.v1': JSON.stringify([{ ...compte2('a1', 'GitHub', '2026-01-01T00:00:00.000Z'), counter: 2, updatedAt: '2026-06-01T00:00:00.000Z' }]) }, maintenant, 'tel');
+    ajouter('v2-compteur-hotp-max', locale, distante, null, (cas) => {
+      const item = JSON.parse(cas.attendu['mymfa.accounts.v1'])[0];
+      if (item.counter !== 5) throw new Error('le compteur maximal doit gagner');
+    });
+  }
+
+  // Doublons de même identité : fusion champ par champ, le plus ancien fait foi,
+  // l'autre enterré dans le marqueur.
+  {
+    const locale = Sync2.migrer({ 'mymfa.accounts.v1': JSON.stringify([{ ...compte2('nouveau', 'GitHub', '2026-06-01T00:00:00.000Z'), tag: 'travail' }]) }, maintenant, 'pc');
+    const distante = Sync2.migrer({ 'mymfa.accounts.v1': JSON.stringify([{ ...compte2('ancien', 'GitHub', '2026-01-01T00:00:00.000Z'), description: 'perso' }]) }, maintenant, 'tel');
+    ajouter('v2-doublons-fusionnes', locale, distante, null, (cas) => {
+      const ids = JSON.parse(cas.attendu['mymfa.accounts.v1']).map((a) => a.id);
+      if (ids.join() !== 'ancien') throw new Error(`doublons : attendu [ancien], eu [${ids}]`);
+      const marqueur = Sync2.lireMarqueur(cas.attendu);
+      if (!marqueur.v1.nouveau) throw new Error('le doublon doit être enterré dans le marqueur');
+    });
+  }
+
+  // Tampon reçu dans le futur : contenu accepté, genres de rapport signalés.
+  {
+    const locale = {};
+    const distante = Sync2.migrer({ 'mymfa.accounts.v1': JSON.stringify([compte2('a1', 'GitHub', '2026-01-01T00:00:00.000Z')]) }, maintenant, 'tel');
+    editer(distante, 'a1', 'issuer', 'Du futur', stamp(T2 + 365 * 24 * 60 * MINUT_MS, 3, 'tel'));
+    ajouter('v2-tampon-futur-journalise', locale, distante, null, (cas) => {
+      if (!cas.genres.includes('horloge')) throw new Error("l'horloge suspecte doit être journalisée");
+    });
+  }
+
+  // Élagage : trace vue par tous les appareils enregistrés et rétention écoulée
+  // (31 jours > 30) — la trace doit aussi être plus récente que tous les champs.
+  {
+    const il_y_a_31_jours = T2 - 31 * 24 * 60 * MINUT_MS;
+    const locale = Sync2.migrer({ 'mymfa.accounts.v1': JSON.stringify([compte2('a1', 'GitHub', '2026-01-01T00:00:00.000Z')]) }, maintenant, 'pc');
+    const items = JSON.parse(locale['mymfa.accounts.v1']);
+    items[0].t = stamp(il_y_a_31_jours, 1, 'tel');
+    locale['mymfa.accounts.v1'] = JSON.stringify(items);
+    locale[Sync2.SYNC_KEY] = JSON.stringify({
+      sync: 'v2',
+      appareils: { pc: { vu: stamp(T2, 5, 'pc'), actifLe: maintenant }, tel: { vu: stamp(T2, 5, 'tel'), actifLe: maintenant } },
+      historiqueVideLe: null,
+    });
+    const distante = JSON.parse(JSON.stringify(locale));
+    ajouter('v2-trace-vue-partout-elaguee', locale, distante, null, (cas) => {
+      const items2 = JSON.parse(cas.attendu['mymfa.accounts.v1']);
+      if (items2.length !== 0) throw new Error('la trace vue partout doit élaguer');
+    });
+  }
+
+  // Trace récente : gardée même vue partout (rétention de 30 jours).
+  {
+    const locale = Sync2.migrer({ 'mymfa.accounts.v1': JSON.stringify([compte2('a1', 'GitHub', '2026-01-01T00:00:00.000Z')]) }, maintenant, 'pc');
+    const items = JSON.parse(locale['mymfa.accounts.v1']);
+    items[0].t = stamp(T2 - MINUT_MS, 1, 'tel');
+    locale['mymfa.accounts.v1'] = JSON.stringify(items);
+    locale[Sync2.SYNC_KEY] = JSON.stringify({
+      sync: 'v2',
+      appareils: { pc: { vu: stamp(T2, 5, 'pc'), actifLe: maintenant }, tel: { vu: stamp(T2, 5, 'tel'), actifLe: maintenant } },
+      historiqueVideLe: null,
+    });
+    const distante = JSON.parse(JSON.stringify(locale));
+    ajouter('v2-trace-recente-gardee', locale, distante, null, (cas) => {
+      const items2 = JSON.parse(cas.attendu['mymfa.accounts.v1']);
+      if (items2.length !== 1) throw new Error('la trace récente doit être gardée pour se propager');
+    });
+  }
+
+  return { maintenant, cases };
+}
+
 mkdirSync(outDir, { recursive: true });
 const vault = await vaultFixtures();
 writeFileSync(join(outDir, 'vault-web.json'), `${JSON.stringify(vault, null, 2)}\n`);
 const sync = syncCases();
 writeFileSync(join(outDir, 'sync-web.json'), `${JSON.stringify(sync, null, 2)}\n`);
-console.log(`fixtures : vault-web.json (3 coffres), sync-web.json (${sync.cases.length} cas de fusion)`);
+const sync2 = sync2Cases();
+writeFileSync(join(outDir, 'sync2-web.json'), `${JSON.stringify(sync2, null, 2)}\n`);
+console.log(
+  `fixtures : vault-web.json (3 coffres), sync-web.json (${sync.cases.length} cas de fusion), sync2-web.json (${sync2.cases.length} cas de fusion v2)`
+);

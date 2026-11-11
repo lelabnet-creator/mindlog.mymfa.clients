@@ -23,6 +23,10 @@
   'use strict';
 
   const VAULT_KEY = 'mymfa.vault.v1';
+  // Marqueur de synchro v2 dans les données (constante de js/sync2.js, reprise
+  // ici sans dépendance : sa présence dans les données fait passer l'enveloppe
+  // à v: 2 — un client d'avant exigeait v: 1 et refuse d'ouvrir, donc d'écrire).
+  const SYNC_V2_KEY = 'mymfa.sync.v2';
   // Au-delà de la recommandation OWASP (600 000) : le coffre — et sa sauvegarde Drive — est
   // brute-forçable hors ligne, et ce coût n'est payé qu'au déverrouillage (une fois par session).
   const PBKDF2_ITERATIONS = 1000000;
@@ -179,7 +183,9 @@
     if (!raw) return null;
     try {
       const record = JSON.parse(raw);
-      return record && record.v === 1 && record.password && record.data ? record : null;
+      // Enveloppes v1 (fusion d'origine) et v2 (synchro v2) se lisent ici ; un
+      // client d'avant exigeait v === 1 et refusait donc un coffre v2.
+      return record && (record.v === 1 || record.v === 2) && record.password && record.data ? record : null;
     } catch {
       return null;
     }
@@ -205,7 +211,7 @@
     validatePassword(password);
     const dek = await subtle.generateKey({ name: 'AES-GCM', length: 256 }, true, ['encrypt', 'decrypt']);
     const record = {
-      v: 1,
+      v: data && data[SYNC_V2_KEY] ? 2 : 1,
       password: await passwordEntry(dek, password, iterations),
       passkeys: [],
       data: await encryptData(dek, data),
