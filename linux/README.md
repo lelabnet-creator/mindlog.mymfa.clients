@@ -103,6 +103,12 @@ systemctl --user enable --now mymfa
 mymfa unlock
 ```
 
+Sous hyprdesk, rien à taper : à la première connexion sans coffre, une carte
+propose de le créer ou de reprendre la sauvegarde du web (`CreateVault`,
+`InstallVault`) ; le coffre est ouvert et scellé dans le même geste, et les
+connexions suivantes l'ouvrent seules. `mymfa init` fait de même en terminal
+(il passe par le démon).
+
 Le démon lit `WAYLAND_DISPLAY` (presse-papiers, pinentry) dans
 l'environnement du gestionnaire systemd de l'utilisateur quand il ne l'a pas
 reçu au démarrage : le compositeur doit l'y importer
@@ -195,6 +201,8 @@ est activable par le bus (premier appel = démarrage).
 | Méthode | Signature | Rôle |
 |---|---|---|
 | `Unlock(s password)` | `s → ()` | Déverrouille avec le mot de passe du coffre. Scelle au passage si une clé de session attend. |
+| `CreateVault(s password)` | `s → ()` | Crée le coffre de cet ordinateur (aucun ne doit exister ; 10 caractères au moins) et l'ouvre. Scelle au passage si une clé de session attend : la connexion suivante l'ouvre sans saisie. |
+| `InstallVault(s path, s password)` | `ss → ()` | Installe une sauvegarde du web (`mymfa-vault.json`) ; le mot de passe (celui du web) est vérifié avant toute écriture, puis le coffre est ouvert et scellé comme à la création. |
 | `Lock()` | `() → ()` | Verrouille : DEK, comptes, logins et trousseau quittent la mémoire. |
 | `Codes()` | `() → a(sssssuub)` | Codes en cours : `(id, émetteur, compte, tag, code, secondes_restantes, période, favori)`. HOTP : code du compteur enregistré, `période = 0`, `restantes = 0`. |
 | `SearchLogins(s query)` | `s → a(sssss)` | Logins : `(id, titre, hôte, adresse, identifiant)` ; recherche insensible à la casse dans titre, adresse, identifiant ; vide = tous. Jamais de mot de passe. |
@@ -225,7 +233,9 @@ est activable par le bus (premier appel = démarrage).
 ### Erreurs (`today.mindlog.MyMfa1.Error.*`)
 
 `WrongPassword`, `NoVault`, `Corrupted`, `Locked`, `NotFound`,
-`NoSessionKey` (Seal sans connexion par pam_mymfa), `Failed` — chacune avec un
+`NoSessionKey` (Seal sans connexion par pam_mymfa), `VaultExists`
+(CreateVault ou InstallVault alors qu'un coffre existe), `WeakPassword`
+(nouveau mot de passe trop court), `Failed` — chacune avec un
 message en français affichable.
 
 ### Invite de déverrouillage

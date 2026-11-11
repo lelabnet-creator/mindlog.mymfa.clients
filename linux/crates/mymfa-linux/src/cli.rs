@@ -2,7 +2,7 @@
  * Ligne de commande `mymfa` : le démon, et les commandes qui lui parlent par
  * today.mindlog.MyMfa1 (la même interface que hyprdesk).
  */
-use crate::chemins::{self, Chemins};
+use crate::chemins::Chemins;
 use crate::demon::Demon;
 use crate::interface::{self, CodeDbus, LoginDbus, MyMfa};
 use crate::{import_gnome, journal, service};
@@ -38,7 +38,7 @@ pub async fn executer(args: Vec<String>) -> Result<(), String> {
     let reste = &args[args.len().min(1)..];
     match commande {
         "daemon" => demon().await,
-        "init" => init(reste),
+        "init" => init(reste).await,
         "status" => status().await,
         "unlock" => {
             let mdp = lire_mot_de_passe("Mot de passe du coffre myMFA : ").map_err(|e| e.to_string())?;
@@ -286,17 +286,21 @@ async fn seal(reste: &[String]) -> Result<(), String> {
 
 /* ───── init ───── */
 
-fn init(reste: &[String]) -> Result<(), String> {
+/// Création (ou sauvegarde du web installée) par le démon : il ouvre le
+/// coffre aussitôt et le scelle si la session vient de pam_mymfa.
+async fn init(reste: &[String]) -> Result<(), String> {
     let chemins = Chemins::depuis_environnement();
     let cible = chemins.coffre();
     if cible.exists() {
         return Err(format!("un coffre existe déjà : {}", cible.display()));
     }
-    let texte = if let Some(i) = reste.iter().position(|a| a == "--from") {
+    if let Some(i) = reste.iter().position(|a| a == "--from") {
         let source = reste.get(i + 1).ok_or("usage : mymfa init --from <mymfa-vault.json>")?;
         let texte = std::fs::read_to_string(source).map_err(|e| format!("{source} : {e}"))?;
         mymfa_core::vault::parse(&texte).ok_or("ce fichier n'est pas un coffre myMFA (mymfa-vault.json)")?;
-        texte
+        let absolu = std::fs::canonicalize(source).map_err(|e| format!("{source} : {e}"))?;
+        let mdp = lire_mot_de_passe("Mot de passe du coffre (celui du web) : ").map_err(|e| e.to_string())?;
+        appeler::<()>("InstallVault", &(absolu.to_string_lossy().as_ref(), mdp.as_str())).await?;
     } else {
         let mdp = lire_mot_de_passe("Nouveau mot de passe du coffre : ").map_err(|e| e.to_string())?;
         mymfa_core::vault::validate_password(&mdp)
@@ -305,12 +309,14 @@ fn init(reste: &[String]) -> Result<(), String> {
         if *mdp != *confirmation {
             return Err("les deux saisies diffèrent".into());
         }
-        let (record, _) = mymfa_core::vault::create(&mdp, &Default::default(), mymfa_core::vault::PBKDF2_ITERATIONS)
-            .map_err(|e| e.to_string())?;
-        serde_json::to_string(&record).map_err(|e| e.to_string())?
-    };
-    chemins::ecrire_prive(&cible, texte.as_bytes()).map_err(|e| e.to_string())?;
-    println!("Coffre installé : {}", cible.display());
+        appeler::<()>("CreateVault", &(mdp.as_str(),)).await?;
+    }
+    let p = proxy().await?;
+    let scelle: bool = propriete(&p, "Sealed").await.unwrap_or(false);
+    println!("Coffre installé et ouvert : {}", cible.display());
+    if scelle {
+        println!("Il s'ouvrira seul à vos prochaines connexions.");
+    }
     Ok(())
 }
 

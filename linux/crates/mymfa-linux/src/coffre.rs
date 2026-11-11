@@ -2,7 +2,8 @@
  * Le coffre myMFA, vu du bureau : lecture seule. Le démon déverrouille le
  * fichier `mymfa-vault.json` (même format que le web et Android, cœur
  * mymfa-core), en tire les comptes 2FA et les logins des sites, puis efface
- * les données en clair. Il n'écrit jamais le coffre : sa synchronisation
+ * les données en clair. Il n'écrit le coffre qu'à sa naissance (création ou
+ * sauvegarde du web installée, demon.rs) : ensuite, sa synchronisation
  * appartient aux clients qui l'éditent.
  */
 use mymfa_core::otp::{self, Algorithm};

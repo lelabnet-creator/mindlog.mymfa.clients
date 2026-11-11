@@ -37,6 +37,10 @@ pub enum ErreurMyMfa {
     NotFound(String),
     /// Aucune clé de session remise par pam_mymfa depuis le démarrage.
     NoSessionKey(String),
+    /// Création demandée alors qu'un coffre existe.
+    VaultExists(String),
+    /// Mot de passe d'un nouveau coffre trop court.
+    WeakPassword(String),
     Failed(String),
 }
 
@@ -48,6 +52,8 @@ impl From<Refus> for ErreurMyMfa {
             Refus::Coffre(ErreurCoffre::Absent) => ErreurMyMfa::NoVault(m),
             Refus::Coffre(ErreurCoffre::Corrompu) => ErreurMyMfa::Corrupted(m),
             Refus::PasDeCleSession => ErreurMyMfa::NoSessionKey(m),
+            Refus::CoffreExistant => ErreurMyMfa::VaultExists(m),
+            Refus::MotDePasseFaible => ErreurMyMfa::WeakPassword(m),
             Refus::Echec(_) => ErreurMyMfa::Failed(m),
         }
     }
@@ -72,6 +78,22 @@ impl MyMfa {
     async fn unlock(&self, password: String) -> Result<(), ErreurMyMfa> {
         let mdp = Zeroizing::new(password);
         Ok(self.d.deverrouiller(mdp).await?)
+    }
+
+    /// Crée le coffre de cet ordinateur et l'ouvre ; scellé par la clé de
+    /// session s'il en attend une (la connexion suivante l'ouvrira seule).
+    async fn create_vault(&self, password: String) -> Result<(), ErreurMyMfa> {
+        let mdp = Zeroizing::new(password);
+        Ok(self.d.creer(mdp).await?)
+    }
+
+    /// Installe une sauvegarde du web (`mymfa-vault.json`, chemin lisible par
+    /// l'utilisateur) avec son mot de passe, vérifié avant toute écriture ;
+    /// ouverte et scellée comme à la création.
+    async fn install_vault(&self, path: String, password: String) -> Result<(), ErreurMyMfa> {
+        let mdp = Zeroizing::new(password);
+        let texte = std::fs::read_to_string(&path).map_err(|e| ErreurMyMfa::Failed(format!("{path} : {e}")))?;
+        Ok(self.d.installer_sauvegarde(texte, mdp).await?)
     }
 
     async fn lock(&self) {

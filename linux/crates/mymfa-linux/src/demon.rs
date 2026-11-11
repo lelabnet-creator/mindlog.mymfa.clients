@@ -56,6 +56,10 @@ pub enum Refus {
     Coffre(ErreurCoffre),
     /// Aucune clé de session : pas de connexion par pam_mymfa depuis le démarrage.
     PasDeCleSession,
+    /// Création demandée alors qu'un coffre existe déjà.
+    CoffreExistant,
+    /// Mot de passe d'un nouveau coffre trop court.
+    MotDePasseFaible,
     Echec(String),
 }
 
@@ -64,6 +68,8 @@ impl std::fmt::Display for Refus {
         match self {
             Refus::Coffre(e) => e.fmt(f),
             Refus::PasDeCleSession => f.write_str("aucune clé de session (connexion sans pam_mymfa)"),
+            Refus::CoffreExistant => f.write_str("un coffre existe déjà sur cet ordinateur"),
+            Refus::MotDePasseFaible => write!(f, "mot de passe trop court ({} caractères au moins)", mymfa_core::vault::PASSWORD_MIN_LENGTH),
             Refus::Echec(m) => f.write_str(m),
         }
     }
@@ -135,6 +141,58 @@ impl Demon {
             .await
             .map_err(|_| Refus::Echec("déverrouillage interrompu".into()))??;
         self.installer(ouvert, Some(&mot_de_passe));
+        Ok(())
+    }
+
+    /* ───── Création ───── */
+
+    /// Crée le coffre (aucun n'existe encore) puis l'ouvre : si une clé de
+    /// session attend (connexion par pam_mymfa), le mot de passe est scellé
+    /// au passage et la connexion suivante ouvre le coffre sans saisie.
+    pub async fn creer(self: &Partage, mot_de_passe: Zeroizing<String>) -> Result<(), Refus> {
+        if self.coffre_present() {
+            return Err(Refus::CoffreExistant);
+        }
+        mymfa_core::vault::validate_password(&mot_de_passe).map_err(|_| Refus::MotDePasseFaible)?;
+        let mdp = mot_de_passe.clone();
+        let (record, dek) = tokio::task::spawn_blocking(move || {
+            mymfa_core::vault::create(&mdp, &Default::default(), mymfa_core::vault::PBKDF2_ITERATIONS)
+        })
+        .await
+        .map_err(|_| Refus::Echec("création interrompue".into()))?
+        .map_err(|e| Refus::Echec(e.to_string()))?;
+        self.poser(record, dek, &mot_de_passe)
+    }
+
+    /// Installe une sauvegarde du web (`mymfa-vault.json`) : le mot de passe
+    /// (celui du web) est vérifié avant d'écrire quoi que ce soit, puis le
+    /// coffre est ouvert et scellé comme à la création.
+    pub async fn installer_sauvegarde(self: &Partage, texte: String, mot_de_passe: Zeroizing<String>) -> Result<(), Refus> {
+        if self.coffre_present() {
+            return Err(Refus::CoffreExistant);
+        }
+        let record = mymfa_core::vault::parse(&texte).ok_or(Refus::Coffre(ErreurCoffre::Corrompu))?;
+        let mdp = mot_de_passe.clone();
+        let (record, dek) = tokio::task::spawn_blocking(move || {
+            mymfa_core::vault::unlock_with_password(&record, &mdp).map(|dek| (record, dek))
+        })
+        .await
+        .map_err(|_| Refus::Echec("vérification interrompue".into()))?
+        .map_err(|_| Refus::Coffre(ErreurCoffre::MauvaisMotDePasse))?;
+        self.poser(record, dek, &mot_de_passe)
+    }
+
+    /// Écrit le coffre neuf et l'installe ouvert (sans second PBKDF2).
+    fn poser(&self, record: mymfa_core::vault::VaultRecord, dek: mymfa_core::vault::Dek, mot_de_passe: &str) -> Result<(), Refus> {
+        let chemin = self.chemins.coffre();
+        if chemin.exists() {
+            return Err(Refus::CoffreExistant);
+        }
+        let texte = serde_json::to_string(&record).map_err(|e| Refus::Echec(e.to_string()))?;
+        chemins::ecrire_prive(&chemin, texte.as_bytes()).map_err(|e| Refus::Echec(e.to_string()))?;
+        journal!("coffre installé ({})", chemin.display());
+        let ouvert = coffre::ouvrir_avec(dek, &record, chemins::modification(&chemin))?;
+        self.installer(ouvert, Some(mot_de_passe));
         Ok(())
     }
 
@@ -478,6 +536,55 @@ mod tests {
         d.sceller(Zeroizing::new(MDP.into())).await.unwrap();
         assert!(d.scelle() && !d.chemins.sans_sceau().exists());
         assert_eq!(d.sceller(Zeroizing::new(MDP.into())).await, Err(Refus::PasDeCleSession));
+    }
+
+    /// Dossier jetable sans coffre (première connexion).
+    fn demon_vide(nom: &str) -> Partage {
+        let d = demon(nom);
+        std::fs::remove_file(d.chemins.coffre()).unwrap();
+        d
+    }
+
+    /// Première connexion : clé de session reçue, pas de coffre ; la
+    /// sauvegarde du web installée est ouverte et scellée d'un coup.
+    #[tokio::test]
+    async fn sauvegarde_installee_puis_scellee() {
+        let d = demon_vide("sauvegarde");
+        assert!(!d.coffre_present());
+        deposer_cle(&d, b"session");
+        d.surveiller_une_fois().await;
+        assert!(d.etat().cle_session.is_some(), "clé gardée en attendant le coffre");
+        let (record, _) = vault::create(MDP, &Default::default(), RAPIDE).unwrap();
+        let texte = serde_json::to_string(&record).unwrap();
+
+        assert_eq!(
+            d.installer_sauvegarde(texte.clone(), Zeroizing::new("pas le bon".into())).await,
+            Err(Refus::Coffre(ErreurCoffre::MauvaisMotDePasse))
+        );
+        assert!(!d.coffre_present(), "rien d'écrit sur un mauvais mot de passe");
+        assert_eq!(
+            d.installer_sauvegarde("{}".into(), Zeroizing::new(MDP.into())).await,
+            Err(Refus::Coffre(ErreurCoffre::Corrompu))
+        );
+
+        d.installer_sauvegarde(texte.clone(), Zeroizing::new(MDP.into())).await.unwrap();
+        assert!(d.coffre_present() && !d.verrouille());
+        assert!(d.scelle(), "scellé dès l'installation");
+        assert_eq!(d.installer_sauvegarde(texte, Zeroizing::new(MDP.into())).await, Err(Refus::CoffreExistant));
+
+        d.verrouiller();
+        deposer_cle(&d, b"session");
+        d.surveiller_une_fois().await;
+        assert!(!d.verrouille(), "connexion suivante : ouvert sans saisie");
+    }
+
+    #[tokio::test]
+    async fn creation_refusee() {
+        let d = demon("creation");
+        assert_eq!(d.creer(Zeroizing::new("un autre mot de passe".into())).await, Err(Refus::CoffreExistant));
+        let d = demon_vide("creation-courte");
+        assert_eq!(d.creer(Zeroizing::new("court".into())).await, Err(Refus::MotDePasseFaible));
+        assert!(!d.coffre_present());
     }
 
     #[tokio::test]
