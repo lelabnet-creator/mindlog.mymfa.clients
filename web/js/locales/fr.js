@@ -652,6 +652,7 @@
     importDeleteFile: 'Supprimez le fichier CSV : vos mots de passe y sont en clair.',
     historyCleared: 'Historique vidé',
     driveSaved: 'Coffre chiffré sauvegardé sur Google Drive',
+    horlogeDecalee: 'Horloge de l’appareil décalée de {minutes} min : corrigée d’après l’heure de Google Drive, à revoir côté système',
     driveRestored: 'Sauvegarde restaurée : déverrouillez avec son mot de passe',
     restoreUndone: 'Restauration annulée : le coffre précédent est rétabli',
     vaultExported: 'Coffre chiffré téléchargé — seul votre mot de passe maître peut le rouvrir',

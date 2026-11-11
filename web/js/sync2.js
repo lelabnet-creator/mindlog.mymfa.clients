@@ -298,6 +298,69 @@
     return { appareil, horloge: new Horloge(maintenant), repere: '' };
   }
 
+  // État d'appareil jamais synchronisé : identifiant et horloge vivent hors des
+  // données du coffre (Web Storage, clés sans valeur sensible).
+  const APPAREIL_KEY = 'mymfa.appareil.v1';
+  const HORLOGE_KEY = 'mymfa.horloge.v1';
+
+  /**
+   * État d'appareil persistant : identifiant stable (créé une fois), horloge
+   * hybride et repère relus à chaque démarrage, écrits après chaque tic ou
+   * fusion. `stockage` est n'importe quel objet compatible Web Storage ;
+   * `T` est l'heure de référence (SYN-08, Heure.maintenant côté web).
+   * @returns {{ appareil: string, etat: object, tic: () => string,
+   *             tampon: (plancher?: string) => string, persister: () => void }}
+   * `tampon(plancher)` donne un tampon pour une modification locale (toujours
+   * plus grand que le plancher) ; après une fusion, l'état ayant été muté,
+   * appeler `persister()`.
+   */
+  function etatPersistant(stockage, T = () => Date.now()) {
+    let appareil = stockage.getItem(APPAREIL_KEY);
+    if (!appareil || !/^[0-9a-z]{6,32}$/.test(appareil)) {
+      const octets = new Uint8Array(4);
+      (globalThis.crypto || {}).getRandomValues?.(octets);
+      appareil = [...octets].map((o) => o.toString(16).padStart(2, '0')).join('');
+      try {
+        stockage.setItem(APPAREIL_KEY, appareil);
+      } catch {
+        /* stockage indisponible : identifiant volatil */
+      }
+    }
+    let etat = nouvelEtat(appareil, T());
+    try {
+      const sauvegarde = JSON.parse(stockage.getItem(HORLOGE_KEY) || 'null');
+      if (sauvegarde && Number.isFinite(sauvegarde.l) && sauvegarde.l > 0) {
+        etat.horloge = new Horloge(sauvegarde.l);
+        etat.horloge.c = Number.isFinite(sauvegarde.c) ? sauvegarde.c : 0;
+        etat.repere = typeof sauvegarde.repere === 'string' ? sauvegarde.repere : '';
+      }
+    } catch {
+      /* horloge illisible : on repart de T() */
+    }
+    const persister = () => {
+      try {
+        stockage.setItem(HORLOGE_KEY, JSON.stringify({ l: etat.horloge.l, c: etat.horloge.c, repere: etat.repere }));
+      } catch {
+        /* stockage indisponible : horloge volatile */
+      }
+    };
+    return {
+      appareil,
+      etat,
+      tic: () => {
+        const tampon = etat.horloge.tic(T(), appareil);
+        persister();
+        return tampon;
+      },
+      tampon: (plancher) => {
+        const t = etat.horloge.apres(T(), plancher || null, appareil);
+        persister();
+        return t;
+      },
+      persister,
+    };
+  }
+
   /* ─── Migration v1 → v2 ── */
 
   function lireSupprimesV1(map) {
@@ -840,6 +903,9 @@
     migrer,
     fusion,
     nouvelEtat,
+    etatPersistant,
+    APPAREIL_KEY,
+    HORLOGE_KEY,
     differentDe,
     jsonEgal,
     lireMarqueur,

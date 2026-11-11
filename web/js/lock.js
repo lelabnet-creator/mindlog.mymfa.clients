@@ -42,6 +42,35 @@
   let restoreUndo = false; // une restauration vient de remplacer le coffre : « Annuler » proposé
   const host = window.MYMFA_HOST || null;
 
+  /* ───── Temps (SYN-07/08) ─────
+   * Heure de référence T() : horloge locale corrigée par l'heure des serveurs
+   * Google renvoyée par Drive (app.noteHeureDrive reçoit chaque réponse) ; le
+   * dernier décalage connu survit à la session (« hors ligne : non vérifié »).
+   * Horloge hybride et identifiant d'appareil : hors des données du coffre,
+   * jamais synchronisés — le repère et l'horloge reprennent au démarrage. */
+  const TEMPS_KEY = 'mymfa.temps.v1';
+  let decalageConnu = null;
+  try {
+    const sauvegarde = JSON.parse(localStorage.getItem(TEMPS_KEY) || 'null');
+    if (sauvegarde && Number.isFinite(sauvegarde.decalageMs)) decalageConnu = sauvegarde.decalageMs;
+  } catch {
+    /* dernier décalage illisible : horloge locale non corrigée */
+  }
+  const heure = Heure.create({ decalageInitial: decalageConnu });
+  const temps = Sync2.etatPersistant(localStorage, () => heure.maintenant());
+  /** Reçoit l'heure des serveurs Google (ms) d'une réponse Drive : corrige T(),
+   * alerte au-delà de 5 min, dernier décalage conservé pour la session suivante. */
+  function noterHeureServeur(heureServeurMs) {
+    if (!Number.isFinite(heureServeurMs)) return null;
+    const mesure = heure.recevoirReference(heureServeurMs);
+    try {
+      localStorage.setItem(TEMPS_KEY, JSON.stringify({ decalageMs: mesure.decalageMs }));
+    } catch {
+      /* décalage non conservé : re-mesuré au prochain échange */
+    }
+    return mesure;
+  }
+
   /* ───────────── Stockage ───────────── */
 
   const isSensitive = (key) => SENSITIVE.includes(key);
@@ -225,7 +254,11 @@
   /* ───────────── Actions ───────────── */
 
   async function finishUnlock(key, { fromHost = false } = {}) {
-    const data = await Vault.decryptData(key, record.data);
+    const brut = await Vault.decryptData(key, record.data);
+    // Migration v1 → v2 (SYN-07) : tampons par champ, marqueur, tombstones v1
+    // rattachés. Rejouable sans effet sur un coffre déjà v2.
+    const data = Sync2.migrer(brut, 0, temps.appareil);
+    const migre = !brut[Sync2.SYNC_KEY];
     dek = key;
     mem = new Map(Object.entries(data));
     failures = 0;
@@ -233,6 +266,13 @@
     localStorage.removeItem(PREVIOUS_KEY);
     restoreUndo = false;
     lastActivity = Date.now();
+    if (migre) {
+      await enqueue(async () => {
+        if (!record || dek !== key) return; // verrouillé entre-temps
+        record = { ...record, v: 2, data: await Vault.encryptData(key, data) };
+        writeRecord();
+      });
+    }
     updateChrome();
     hooks.onUnlock();
     if (host && !fromHost) host.unlocked(key);
@@ -276,11 +316,12 @@
   const lockFromHost = () => lock({ fromHost: true });
 
   async function enable(password) {
-    const data = {};
+    const collecte = {};
     for (const key of SENSITIVE) {
       const value = localStorage.getItem(key);
-      if (value !== null) data[key] = value;
+      if (value !== null) collecte[key] = value;
     }
+    const data = Sync2.migrer(collecte, 0, temps.appareil);
     const created = await Vault.create(password, data);
     // Coffre écrit d'abord, données en clair supprimées ensuite : jamais d'état sans copie.
     record = created.record;
@@ -767,6 +808,9 @@
 
   window.Lock = {
     storage,
+    temps,
+    heure,
+    noterHeureServeur,
     init,
     lock,
     status,

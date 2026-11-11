@@ -149,7 +149,9 @@ try {
     await toast.filter({ hasText: 'Google Drive' }).waitFor();
     assert.ok(driveFile, 'fichier envoyé');
     assert.ok(!driveFile.content.includes(SECRET), 'aucun secret en clair sur Drive');
-    assert.equal(JSON.parse(driveFile.content).v, 1);
+    // SYN-07 : le coffre porte le marqueur de synchro v2, l'enveloppe passe à v: 2 —
+    // un client d'avant (v: 1 exigée) refuse de l'ouvrir, donc d'écrire.
+    assert.equal(JSON.parse(driveFile.content).v, 2);
     assert.ok(driveCalls.every((c) => c.auth === 'Bearer jeton'));
     assert.match(await page.textContent('#drive-status'), /Dernière sauvegarde/);
   });

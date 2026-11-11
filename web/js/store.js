@@ -50,7 +50,52 @@
     return String(tag || '').trim().replace(/\s+/g, '-').toLowerCase();
   }
 
-  function createStore(storage) {
+  /* ───── Synchro v2 (SYN-07) ─────
+   * createStore(storage, temps) : quand `temps` est fourni ({ tampon(plancher) }),
+   * chaque modification tamponne ses champs au format v2 (item.h, item.t) —
+   * c'est ce format que fusionne js/sync2.js. Sans `temps`, le store écrit la
+   * forme v1 historique (updatedAt seul) : l'extension reste en v1 jusqu'à son
+   * adoption (EXT-12), les tests v1 ne bougent pas. La règle de vie (un élément
+   * vit si max(tampons de ses champs) > trace) est reprise de js/sync2.js —
+   * store.js ne peut pas l'importer : sync2.js dépend de store.js pour les clés. */
+  const SYNC_V2_KEY = 'mymfa.sync.v2'; // constante de js/sync2.js
+
+  const tamponDe = (item, champ) => (item && item.h && typeof item.h[champ] === 'string' ? item.h[champ] : '');
+
+  const plusGrandTampon = (item) => {
+    let sommet = '';
+    if (item && item.h && typeof item.h === 'object') {
+      for (const t of Object.values(item.h)) if (typeof t === 'string' && t > sommet) sommet = t;
+    }
+    return sommet;
+  };
+
+  const traceDe = (item) => (item && typeof item.t === 'string' && item.t ? item.t : null);
+
+  const estVivant = (item) => {
+    const trace = traceDe(item);
+    if (!trace) return true;
+    return plusGrandTampon(item) > trace;
+  };
+
+  const isoDeTampon = (tampon) => new Date(Number(String(tampon).slice(0, 13))).toISOString();
+
+  function createStore(storage, temps = null) {
+    const v2 = () => temps && typeof temps.tampon === 'function';
+
+    function marqueur() {
+      try {
+        const value = JSON.parse(storage.getItem(SYNC_V2_KEY) || '{}');
+        return value && typeof value === 'object' && !Array.isArray(value) ? value : {};
+      } catch {
+        return {};
+      }
+    }
+
+    function ecrireMarqueur(marqueurCourant) {
+      storage.setItem(SYNC_V2_KEY, JSON.stringify(marqueurCourant));
+    }
+
     function read(key) {
       try {
         const raw = storage.getItem(key);
@@ -83,8 +128,14 @@
       return [account.issuer, account.account].filter(Boolean).join(' — ');
     }
 
+    /** Éléments vivants d'une collection : les morts (trace plus récente que
+     * leurs champs) restent dans la copie pour propager leur trace, invisibles. */
+    function vivants(key) {
+      return v2() ? read(key).filter(estVivant) : read(key);
+    }
+
     function list() {
-      return read(ACCOUNTS_KEY);
+      return vivants(ACCOUNTS_KEY);
     }
 
     function get(id) {
@@ -115,7 +166,15 @@
         createdAt: now,
         updatedAt: now,
       };
-      const accounts = list();
+      if (v2()) {
+        const tampon = temps.tampon(null);
+        account.h = {};
+        for (const champ of ['type', 'issuer', 'account', 'secret', 'algorithm', 'digits', 'period', 'counter', 'tag', 'description', 'favorite']) {
+          account.h[champ] = tampon;
+        }
+        account.updatedAt = isoDeTampon(tampon);
+      }
+      const accounts = read(ACCOUNTS_KEY);
       accounts.push(account);
       write(ACCOUNTS_KEY, accounts);
       log('create', account, source ? { source } : null);
@@ -123,7 +182,9 @@
     }
 
     function update(id, patch) {
-      const accounts = list();
+      // Liste brute : modifier un élément supprimé (trace) le fait revivre —
+      // une modification plus récente que sa suppression gagne (v2).
+      const accounts = read(ACCOUNTS_KEY);
       const idx = accounts.findIndex((a) => a.id === id);
       if (idx === -1) throw storeError('accountNotFound');
       const before = accounts[idx];
@@ -141,7 +202,16 @@
       // Favori : simple préférence d'affichage, non journalisée.
       if ('favorite' in patch) next.favorite = Boolean(patch.favorite);
       if (changes.length === 0 && next.counter === before.counter && next.favorite === Boolean(before.favorite)) return before;
-      next.updatedAt = new Date().toISOString();
+      if (v2()) {
+        next.h = { ...(before.h || {}) };
+        const champsChanges = [...changes.map((c) => c.field)];
+        if (next.counter !== before.counter) champsChanges.push('counter');
+        if (next.favorite !== before.favorite) champsChanges.push('favorite');
+        for (const champ of champsChanges) next.h[champ] = temps.tampon(tamponDe(before, champ));
+        next.updatedAt = isoDeTampon(plusGrandTampon(next));
+      } else {
+        next.updatedAt = new Date().toISOString();
+      }
       accounts[idx] = next;
       write(ACCOUNTS_KEY, accounts);
       if (changes.length) log('update', next, { changes });
@@ -151,7 +221,7 @@
     /* ───── Mots de passe ───── */
 
     function logins() {
-      return read(LOGINS_KEY);
+      return vivants(LOGINS_KEY);
     }
 
     function findLogin(origin, username) {
@@ -176,13 +246,23 @@
         updatedAt: now,
         passwordChangedAt: now, // politique de renouvellement (tableau de bord)
       };
-      write(LOGINS_KEY, [...logins(), login]);
+      if (v2()) {
+        const tampon = temps.tampon(null);
+        login.h = {};
+        for (const champ of ['origin', 'username', 'password', 'title', 'note', 'tag', 'source', 'favorite']) {
+          login.h[champ] = tampon;
+        }
+        login.updatedAt = isoDeTampon(tampon);
+        login.passwordChangedAt = login.updatedAt;
+      }
+      write(LOGINS_KEY, [...read(LOGINS_KEY), login]);
       log('create', loginLabel(login), { kind: 'login', ...(source ? { source } : {}) });
       return login;
     }
 
     function updateLogin(id, patch) {
-      const list = logins();
+      // Liste brute, comme update : une modification fait revivre (v2).
+      const list = read(LOGINS_KEY);
       const idx = list.findIndex((l) => l.id === id);
       if (idx === -1) throw storeError('accountNotFound');
       const before = list[idx];
@@ -201,8 +281,17 @@
       if ('favorite' in patch) next.favorite = Boolean(patch.favorite);
       const changed = ['origin', 'username', 'password', 'title', 'note', 'tag'].filter((f) => (next[f] || '') !== (before[f] || ''));
       if (!changed.length && Boolean(next.favorite) === Boolean(before.favorite)) return before;
-      next.updatedAt = new Date().toISOString();
-      if (changed.includes('password')) next.passwordChangedAt = next.updatedAt;
+      if (v2()) {
+        next.h = { ...(before.h || {}) };
+        const champsChanges = [...changed];
+        if (Boolean(next.favorite) !== Boolean(before.favorite)) champsChanges.push('favorite');
+        for (const champ of champsChanges) next.h[champ] = temps.tampon(tamponDe(before, champ));
+        next.updatedAt = isoDeTampon(plusGrandTampon(next));
+        if (changed.includes('password')) next.passwordChangedAt = isoDeTampon(next.h.password);
+      } else {
+        next.updatedAt = new Date().toISOString();
+        if (changed.includes('password')) next.passwordChangedAt = next.updatedAt;
+      }
       list[idx] = next;
       write(LOGINS_KEY, list);
       // Jamais de mot de passe dans l'historique : seulement les champs modifiés.
@@ -225,8 +314,12 @@
     function removeLogin(id) {
       const login = logins().find((l) => l.id === id);
       if (!login) return false;
-      write(LOGINS_KEY, logins().filter((l) => l.id !== id));
-      bury(id);
+      if (v2()) {
+        write(LOGINS_KEY, read(LOGINS_KEY).map((l) => (l.id === id ? { ...l, t: temps.tampon(plusGrandTampon(l)) } : l)));
+      } else {
+        write(LOGINS_KEY, logins().filter((l) => l.id !== id));
+        bury(id);
+      }
       log('delete', loginLabel(login), { kind: 'login' });
       return true;
     }
@@ -238,7 +331,7 @@
     /* ───── Passkeys des sites ───── */
 
     function passkeys() {
-      return read(PASSKEYS_KEY);
+      return vivants(PASSKEYS_KEY);
     }
 
     function addPasskey(data, source) {
@@ -258,10 +351,25 @@
         updatedAt: now,
       };
       // Un même compte (rp + identifiant utilisateur) n'a qu'une passkey : la nouvelle remplace l'ancienne.
-      const current = passkeys();
-      const replaced = current.filter((p) => p.rpId === passkey.rpId && passkey.userHandle && p.userHandle === passkey.userHandle);
-      write(PASSKEYS_KEY, [...current.filter((p) => !replaced.includes(p)), passkey]);
-      replaced.forEach((p) => bury(p.id));
+      const tous = read(PASSKEYS_KEY);
+      const replaced = tous.filter((p) => estVivant(p) && p.rpId === passkey.rpId && passkey.userHandle && p.userHandle === passkey.userHandle);
+      if (v2()) {
+        const tampon = temps.tampon(null);
+        passkey.h = {};
+        for (const champ of ['credentialId', 'rpId', 'rpName', 'origin', 'userHandle', 'userName', 'userDisplayName', 'algorithm', 'privateKey']) {
+          passkey.h[champ] = tampon;
+        }
+        passkey.updatedAt = isoDeTampon(tampon);
+        const trace = temps.tampon(tampon);
+        const restants = tous.map((p) =>
+          replaced.includes(p) ? { ...p, t: temps.tampon(plusGrandTampon(p)) } : p
+        );
+        write(PASSKEYS_KEY, [...restants, passkey]);
+        const _ = trace;
+      } else {
+        write(PASSKEYS_KEY, [...tous.filter((p) => !replaced.includes(p)), passkey]);
+        replaced.forEach((p) => bury(p.id));
+      }
       log('create', passkeyLabel(passkey), { kind: 'passkey', ...(source ? { source } : {}) });
       return passkey;
     }
@@ -269,8 +377,12 @@
     function removePasskey(id) {
       const passkey = passkeys().find((p) => p.id === id);
       if (!passkey) return false;
-      write(PASSKEYS_KEY, passkeys().filter((p) => p.id !== id));
-      bury(id);
+      if (v2()) {
+        write(PASSKEYS_KEY, read(PASSKEYS_KEY).map((p) => (p.id === id ? { ...p, t: temps.tampon(plusGrandTampon(p)) } : p)));
+      } else {
+        write(PASSKEYS_KEY, passkeys().filter((p) => p.id !== id));
+        bury(id);
+      }
       log('delete', passkeyLabel(passkey), { kind: 'passkey' });
       return true;
     }
@@ -298,8 +410,12 @@
       const accounts = list();
       const account = accounts.find((a) => a.id === id);
       if (!account) return false;
-      write(ACCOUNTS_KEY, accounts.filter((a) => a.id !== id));
-      bury(id);
+      if (v2()) {
+        write(ACCOUNTS_KEY, read(ACCOUNTS_KEY).map((a) => (a.id === id ? { ...a, t: temps.tampon(plusGrandTampon(a)) } : a)));
+      } else {
+        write(ACCOUNTS_KEY, accounts.filter((a) => a.id !== id));
+        bury(id);
+      }
       log('delete', account);
       return true;
     }
@@ -310,7 +426,13 @@
 
     function clearHistory() {
       write(HISTORY_KEY, []);
-      storage.setItem(DELETED_KEY, JSON.stringify({ ...tombstones(), historyClearedAt: new Date().toISOString() }));
+      if (v2()) {
+        const m = marqueur();
+        m.historiqueVideLe = temps.tampon(typeof m.historiqueVideLe === 'string' ? m.historiqueVideLe : null);
+        ecrireMarqueur(m);
+      } else {
+        storage.setItem(DELETED_KEY, JSON.stringify({ ...tombstones(), historyClearedAt: new Date().toISOString() }));
+      }
     }
 
     function tags() {
@@ -337,7 +459,13 @@
     function setSetting(name, value) {
       const all = settings();
       if (all[name] && JSON.stringify(all[name].value) === JSON.stringify(value)) return;
-      all[name] = { value, at: new Date().toISOString() };
+      if (v2()) {
+        const avant = all[name] && typeof all[name].h === 'string' ? all[name].h : null;
+        const tampon = temps.tampon(avant);
+        all[name] = { value, at: isoDeTampon(tampon), h: tampon };
+      } else {
+        all[name] = { value, at: new Date().toISOString() };
+      }
       storage.setItem(SETTINGS_KEY, JSON.stringify(all));
     }
 

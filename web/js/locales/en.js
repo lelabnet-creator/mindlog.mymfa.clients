@@ -652,6 +652,7 @@
     importDeleteFile: 'Delete the CSV file: your passwords are in plain text in it.',
     historyCleared: 'History cleared',
     driveSaved: 'Encrypted vault backed up to Google Drive',
+    horlogeDecalee: 'Device clock off by {minutes} min: corrected against Google Drive time, please fix your system clock',
     driveRestored: 'Backup restored: unlock with its password',
     restoreUndone: 'Restore undone: the previous vault is back',
     vaultExported: 'Encrypted vault downloaded — only your master password can open it',

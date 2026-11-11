@@ -4,7 +4,7 @@
 
   const { t } = I18n;
   // Lock.storage : localStorage en clair, ou coffre chiffré une fois le mot de passe maître activé.
-  const store = Store.createStore(Lock.storage);
+  const store = Store.createStore(Lock.storage, Lock.temps);
   const VERSION = '0.4.0';
   const VIEWS = ['home', 'scan', 'new', 'passwords', 'dashboard', 'activity', 'settings'];
   const RING_LENGTH = 2 * Math.PI * 19;
@@ -1389,13 +1389,22 @@
       $('drive-client-id').focus();
     });
     $('btn-drive-enable').addEventListener('click', () => Lock.openEnable());
+  // Heure des serveurs Google reçue d'une réponse Drive (SYN-08) : corrige T(),
+  // alerte au-delà de 5 min de décalage, dernier décalage conservé hors ligne.
+  function noterHeureDrive(entreeDrive) {
+    const ms = Heure.heureDrive(entreeDrive);
+    if (ms === null) return;
+    const mesure = Lock.noterHeureServeur(ms);
+    if (mesure && mesure.alerte) toast(t('toast.horlogeDecalee', { minutes: Math.round(Math.abs(mesure.decalageMs) / 60000) }));
+  }
     $('btn-drive-backup').addEventListener('click', (event) =>
       busy(event.currentTarget, async () => {
         // Journalisé avant l'export : la sauvegarde contient sa propre trace.
         store.log('security', null, { event: 'driveBackup' });
         const content = await Lock.exportVault();
         if (!content) throw Object.assign(new Error('needsPassword'), { code: 'locked' });
-        await drive().upload(content);
+        const envoye = await drive().upload(content);
+        noterHeureDrive(envoye);
         writePref(DRIVE_LAST_KEY, new Date().toISOString());
         // Dans l'extension : la sauvegarde compte pour sa politique automatique.
         if (HOST) {
@@ -1409,6 +1418,7 @@
       busy(event.currentTarget, async () => {
         const backup = await drive().download();
         if (!Vault.parse(backup.content)) throw new Vault.VaultError('invalidBackup');
+        noterHeureDrive(backup);
         pendingRestore = backup;
       })
     );
