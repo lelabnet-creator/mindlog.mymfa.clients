@@ -1,0 +1,4 @@
+[D-BUS Service]
+Name=today.mindlog.MyMfa1
+Exec=@MYMFA@ daemon
+SystemdService=mymfa.service

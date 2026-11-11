@@ -17,7 +17,8 @@ Rust, cœur métier répliqué depuis l'app web. Tickets Plane : épique AND
   - fusion `sync.js` (tombstones, `updatedAt`, déduplication par identité,
     historique plafonné, réglages `mymfa.settings.v1`) ;
   - modèle de données `store.js` (comptes, historique, tags, export/import),
-    textes FR/EN.
+    textes FR/EN (fonction cargo `texts`, active par défaut ; le client
+    `../linux/` la désactive et se construit sans Node).
 - **Application Slint (`crates/mymfa-app`)** — les vues du socle :
   - écran de verrouillage (création du coffre avec jauge de solidité,
     déverrouillage, ralentissement exponentiel après 3 échecs) ;

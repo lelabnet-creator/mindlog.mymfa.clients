@@ -12,6 +12,7 @@ pub mod otpauth;
 pub mod passgen;
 pub mod store;
 pub mod sync;
+#[cfg(feature = "texts")]
 pub mod texts;
 pub mod vault;
 

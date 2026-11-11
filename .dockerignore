@@ -13,6 +13,7 @@ extension/src/app
 
 # Hors de l'image.
 android
+linux
 **/test
 web/*.png
 **/.dual-graph

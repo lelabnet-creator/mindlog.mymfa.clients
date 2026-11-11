@@ -1,0 +1,26 @@
+[workspace]
+resolver = "2"
+members = ["crates/mymfa-sceau", "crates/mymfa-linux"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[workspace.dependencies]
+mymfa-sceau = { path = "crates/mymfa-sceau" }
+# Cœur partagé avec Android : même coffre que le web, octet pour octet. Sans
+# les textes FR/EN (générés par Node côté android/) : le démon n'en a pas besoin.
+mymfa-core = { path = "../android/crates/mymfa-core", default-features = false }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+zeroize = { version = "1.8", features = ["zeroize_derive"] }
+aes-gcm = "0.10"
+pbkdf2 = "0.12"
+sha2 = "0.10"
+libc = "0.2"
+getrandom = "0.3"
+
+[profile.release]
+lto = "thin"
+strip = "debuginfo"

@@ -5,6 +5,13 @@ version.workspace = true
 edition.workspace = true
 publish.workspace = true
 
+[features]
+# Textes FR/EN générés depuis web/js/locales (`npm run gen`) : l'app Android
+# en a besoin, le client Linux (../../../linux) non — il s'en passe, et se
+# construit sans Node.
+default = ["texts"]
+texts = []
+
 [dependencies]
 hmac = "0.12"
 sha1 = "0.10"

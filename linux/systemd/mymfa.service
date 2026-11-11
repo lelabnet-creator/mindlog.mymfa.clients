@@ -1,0 +1,25 @@
+# Démon utilisateur myMFA : trousseau du bureau (org.freedesktop.secrets) et
+# interface today.mindlog.MyMfa1 pour hyprdesk. Installé par
+# scripts/installer.sh dans ~/.config/systemd/user/.
+[Unit]
+Description=myMFA — trousseau du bureau (Secret Service sur le coffre myMFA)
+Documentation=https://app.mymfa.mindlog.today/
+
+[Service]
+Type=dbus
+BusName=today.mindlog.MyMfa1
+ExecStart=%h/.local/bin/mymfa daemon
+Restart=on-failure
+# Invite de repli tant que hyprdesk n'a pas la sienne (LIN-04) ; « none »
+# laisse hyprdesk seul répondre au signal UnlockRequested.
+#Environment=MYMFA_PINENTRY=none
+# Des secrets vivent en mémoire : jamais de vidage sur disque.
+LimitCORE=0
+NoNewPrivileges=yes
+LockPersonality=yes
+RestrictRealtime=yes
+MemoryDenyWriteExecute=yes
+SystemCallArchitectures=native
+
+[Install]
+WantedBy=default.target

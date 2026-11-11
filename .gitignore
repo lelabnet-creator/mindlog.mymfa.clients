@@ -2,8 +2,9 @@
 node_modules/
 dist/
 
-# Rust : cible de compilation et APK produits par xbuild
+# Rust : cible de compilation et APK produits par xbuild ; cible du client Linux
 android/target/
+linux/target/
 
 # Régénérés par les builds : `npm run vendor` (web) et `npm run build` (extension,
 # qui recopie les modules partagés de web/js et embarque l'app). Une seule
