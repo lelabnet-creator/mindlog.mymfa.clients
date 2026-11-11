@@ -1,0 +1,573 @@
+<title>Synchro myMFA par Drive</title>
+<meta name="claude:viewport-fit-sides" content="cover">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,600;12..96,700&family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@400;500&display=swap">
+<style>
+/* Mise en page : colonne de lecture de 72 rem, schémas et simulateur pleine largeur de colonne ; teinte « coffre » vert-de-gris, ambre pour les conflits */
+:root {
+  --bg: #f5f7f6;
+  --surface: #ffffff;
+  --sunk: #e9eeec;
+  --fg: #16201d;
+  --muted: #55635e;
+  --line: #d3dcd8;
+  --accent: #0e6b5c;
+  --accent-soft: #d6ece6;
+  --ok: #1d7a43;
+  --ok-soft: #dcf1e3;
+  --warn: #a35f00;
+  --warn-soft: #fbecd2;
+  --bad: #b3261e;
+  --bad-soft: #f8dcd9;
+  --code-bg: #eef2f0;
+  --display: "Bricolage Grotesque", "Segoe UI", system-ui, sans-serif;
+  --body: "Inter", "Segoe UI", system-ui, sans-serif;
+  --mono: "JetBrains Mono", ui-monospace, "SFMono-Regular", Menlo, monospace;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --bg: #0f1513; --surface: #161e1b; --sunk: #1d2724; --fg: #e4ece9; --muted: #9aaba5; --line: #2c3935;
+    --accent: #5fc7b2; --accent-soft: #173a33; --ok: #6fd394; --ok-soft: #173826; --warn: #f0b45a; --warn-soft: #3a2a12;
+    --bad: #f28b82; --bad-soft: #3d1c1a; --code-bg: #1a2320; color-scheme: dark;
+  }
+}
+:root[data-theme="dark"] {
+  --bg: #0f1513; --surface: #161e1b; --sunk: #1d2724; --fg: #e4ece9; --muted: #9aaba5; --line: #2c3935;
+  --accent: #5fc7b2; --accent-soft: #173a33; --ok: #6fd394; --ok-soft: #173826; --warn: #f0b45a; --warn-soft: #3a2a12;
+  --bad: #f28b82; --bad-soft: #3d1c1a; --code-bg: #1a2320; color-scheme: dark;
+}
+* { box-sizing: border-box; }
+body {
+  background: var(--bg); color: var(--fg); font-family: var(--body); font-size: 15.5px; line-height: 1.6;
+  padding-left: max(16px, env(safe-area-inset-left, 0px)); padding-right: max(16px, env(safe-area-inset-right, 0px));
+  padding-block: 40px 72px;
+}
+main { max-width: 72rem; margin: 0 auto; display: flex; flex-direction: column; gap: 56px; }
+h1, h2, h3 { font-family: var(--display); text-wrap: balance; line-height: 1.15; margin: 0; }
+h1 { font-size: clamp(2rem, 4.5vw, 3rem); letter-spacing: -0.02em; }
+h2 { font-size: 1.6rem; letter-spacing: -0.01em; }
+h3 { font-size: 1.1rem; }
+p { margin: 0; max-width: 68ch; }
+.lead { font-size: 1.1rem; color: var(--muted); }
+.eyebrow { font-size: 0.75rem; letter-spacing: 0.12em; text-transform: uppercase; color: var(--accent); font-weight: 600; }
+section { display: flex; flex-direction: column; gap: 18px; min-width: 0; }
+code, .mono { font-family: var(--mono); font-size: 0.88em; }
+code { background: var(--code-bg); padding: 0.1em 0.35em; border-radius: 4px; }
+a { color: var(--accent); }
+:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+
+/* Architecture */
+.archi { display: grid; grid-template-columns: 1fr 1.25fr 1fr; gap: 16px; align-items: stretch; }
+.clients { display: flex; flex-direction: column; gap: 12px; }
+.client { background: var(--surface); border: 1px solid var(--line); border-radius: 10px; padding: 14px 16px; display: flex; flex-direction: column; gap: 4px; }
+.client b { font-family: var(--display); font-size: 1rem; }
+.client span { color: var(--muted); font-size: 0.85rem; }
+.client .mono { color: var(--fg); font-size: 0.78rem; overflow-wrap: anywhere; }
+.drive { background: var(--accent-soft); border: 1.5px solid var(--accent); border-radius: 14px; padding: 18px; display: flex; flex-direction: column; gap: 10px; min-width: 0; }
+.drive h3 { color: var(--accent); }
+.drive pre { margin: 0; background: var(--surface); border-radius: 8px; padding: 12px; font-family: var(--mono); font-size: 0.74rem; line-height: 1.55; overflow-x: auto; }
+.drive pre .c { color: var(--muted); }
+.flow { text-align: center; font-family: var(--mono); font-size: 0.78rem; color: var(--accent); }
+@media (max-width: 860px) { .archi { grid-template-columns: 1fr; } }
+
+/* Étapes */
+.steps { list-style: none; margin: 0; padding: 0; display: grid; grid-template-columns: repeat(auto-fit, minmax(210px, 1fr)); gap: 12px; counter-reset: s; }
+.steps li { background: var(--surface); border: 1px solid var(--line); border-radius: 10px; padding: 14px 16px; counter-increment: s; display: flex; flex-direction: column; gap: 6px; }
+.steps li::before { content: counter(s); font-family: var(--display); font-weight: 700; color: var(--accent); font-size: 1.3rem; }
+.steps li b { font-weight: 600; }
+.steps li span { color: var(--muted); font-size: 0.9rem; }
+.steps li .new { color: var(--accent); font-size: 0.75rem; font-weight: 600; letter-spacing: 0.06em; text-transform: uppercase; }
+
+/* Tableaux */
+.table-wrap { overflow-x: auto; border: 1px solid var(--line); border-radius: 10px; background: var(--surface); }
+table { border-collapse: collapse; width: 100%; font-size: 0.92rem; }
+th, td { text-align: left; padding: 10px 14px; border-bottom: 1px solid var(--line); vertical-align: top; }
+th { font-size: 0.75rem; letter-spacing: 0.08em; text-transform: uppercase; color: var(--muted); font-weight: 600; background: var(--sunk); }
+tr:last-child td { border-bottom: 0; }
+td:first-child { white-space: nowrap; }
+
+/* v2 */
+.rules { display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 14px; }
+.rule { background: var(--surface); border: 1px solid var(--line); border-radius: 10px; padding: 16px 18px; display: flex; flex-direction: column; gap: 8px; min-width: 0; }
+.rule p { font-size: 0.93rem; }
+.hlc { display: flex; flex-wrap: wrap; gap: 6px; font-family: var(--mono); font-size: 0.82rem; }
+.hlc span { padding: 4px 8px; border-radius: 6px; background: var(--sunk); }
+.hlc span b { font-weight: 500; color: var(--accent); }
+
+/* Simulateur */
+.sim { background: var(--surface); border: 1px solid var(--line); border-radius: 14px; padding: 20px; display: flex; flex-direction: column; gap: 18px; }
+.tabs { display: flex; flex-wrap: wrap; gap: 8px; }
+.tabs button { font: inherit; font-size: 0.88rem; border: 1px solid var(--line); background: var(--bg); color: var(--fg); border-radius: 999px; padding: 6px 14px; cursor: pointer; }
+.tabs button[aria-pressed="true"] { background: var(--accent); border-color: var(--accent); color: var(--surface); }
+.tabs button:hover:not([aria-pressed="true"]) { border-color: var(--accent); }
+.scenario-desc { color: var(--muted); }
+.timeline td.dev { font-weight: 600; }
+.timeline .noted { font-family: var(--mono); font-size: 0.82rem; color: var(--muted); }
+.timeline .skewed { color: var(--bad); }
+.results { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; }
+@media (max-width: 760px) { .results { grid-template-columns: 1fr; } }
+.result { border: 1px solid var(--line); border-radius: 10px; padding: 14px 16px; display: flex; flex-direction: column; gap: 10px; min-width: 0; }
+.result header { display: flex; justify-content: space-between; align-items: center; gap: 10px; flex-wrap: wrap; }
+.result h3 { font-size: 1rem; }
+.verdict { font-size: 0.78rem; font-weight: 600; padding: 3px 10px; border-radius: 999px; }
+.verdict.ok { background: var(--ok-soft); color: var(--ok); }
+.verdict.bad { background: var(--bad-soft); color: var(--bad); }
+.verdict.warn { background: var(--warn-soft); color: var(--warn); }
+.copies { display: grid; grid-template-columns: auto 1fr; gap: 4px 12px; font-size: 0.9rem; }
+.copies dt { color: var(--muted); }
+.copies dd { margin: 0; font-family: var(--mono); font-size: 0.82rem; overflow-wrap: anywhere; }
+.copies dd.gone { color: var(--bad); }
+.journal { margin: 0; padding: 10px 12px; background: var(--sunk); border-radius: 8px; font-size: 0.84rem; display: flex; flex-direction: column; gap: 6px; list-style: none; }
+.journal li.conflict { color: var(--warn); }
+.journal li.alert { color: var(--bad); }
+.journal li.none { color: var(--muted); font-style: italic; }
+.expected { font-size: 0.9rem; border-left: 3px solid var(--accent); padding-left: 12px; }
+
+.note { font-size: 0.85rem; color: var(--muted); }
+.callout { background: var(--warn-soft); border-radius: 10px; padding: 14px 16px; font-size: 0.93rem; max-width: none; }
+.callout b { color: var(--warn); }
+footer { color: var(--muted); font-size: 0.85rem; border-top: 1px solid var(--line); padding-top: 16px; }
+@media (prefers-reduced-motion: no-preference) { .tabs button { transition: background 0.15s, border-color 0.15s; } }
+</style>
+
+<main>
+  <header style="display:flex;flex-direction:column;gap:12px">
+    <div class="eyebrow">myMFA · web, extension, Android, Linux</div>
+    <h1>Synchro myMFA par Google Drive</h1>
+    <p class="lead">Chaque appareil garde sa copie du coffre et travaille hors ligne. Google Drive sert de point de rendez-vous et de sauvegarde : un seul fichier, toujours chiffré, que chaque client télécharge, fusionne avec sa copie et renvoie. Cette page montre comment, ce qui casse dans la fusion actuelle, et l'algorithme proposé pour la remplacer.</p>
+  </header>
+
+  <section aria-labelledby="archi-t">
+    <h2 id="archi-t">Qui parle à qui</h2>
+    <p>Il n'y a pas de serveur myMFA. Le « backend », c'est le dossier caché que Google Drive réserve à chaque application (portée <code>drive.appdata</code>) : invisible dans l'interface de Drive, lisible par les seuls clients du même projet Google Cloud.</p>
+    <div class="archi">
+      <div class="clients">
+        <div class="client"><b>App web</b><span>app.mymfa.mindlog.today</span><span class="mono">localStorage du navigateur</span><span>Synchro à la demande (Sauvegarder, Restaurer).</span></div>
+        <div class="client"><b>Extension Chromium</b><span>Embarque l'app, remplit les sites</span><span class="mono">chrome.storage.local</span><span>Automatique : toutes les 24 h par défaut, vérifiée toutes les 15 min et après chaque modification.</span></div>
+      </div>
+      <div class="drive">
+        <h3>Google Drive · dossier caché de l'app</h3>
+        <div class="flow">⇅ chaque client : télécharge · fusionne · renvoie</div>
+<pre><span class="c">// mymfa-vault.json : seul fichier, tout est chiffré</span>
+{
+  "v": 1,
+  "password": {             <span class="c">// clé du coffre (DEK) chiffrée</span>
+    "kdf": "PBKDF2-SHA256", <span class="c">// par le mot de passe maître</span>
+    "iterations": 1000000,
+    "salt": "…", "iv": "…", "wrapped": "…"
+  },
+  "passkeys": [             <span class="c">// la même DEK, chiffrée</span>
+    { "id", "name", "prfSalt", <span class="c">// par chaque passkey</span>
+      "iv", "wrapped" }
+  ],
+  "data": {                 <span class="c">// comptes 2FA, logins, passkeys</span>
+    "iv": "…", "ct": "…"    <span class="c">// des sites, historique, réglages</span>
+  }                         <span class="c">// AES-256-GCM avec la DEK</span>
+}</pre>
+        <p class="note">Google ne voit que du chiffré. Tous les appareils d'un même coffre partagent la même DEK : coffre ouvert, ils déchiffrent la copie Drive sans redemander le mot de passe.</p>
+      </div>
+      <div class="clients">
+        <div class="client"><b>Android</b><span>Client natif (Rust + Slint)</span><span class="mono">fichier local mymfa-vault.json</span><span>Même cœur Rust que Linux.</span></div>
+        <div class="client"><b>Linux : démon mymfa + hyprdesk</b><span>Trousseau du bureau, Secret Service</span><span class="mono">~/.local/share/mymfa/mymfa-vault.json</span><span>À faire (LIN-06) : à l'ouverture, après chaque modification, toutes les 15 min, à la demande.</span></div>
+      </div>
+    </div>
+  </section>
+
+  <section aria-labelledby="cycle-t">
+    <h2 id="cycle-t">Le cycle d'une synchronisation</h2>
+    <ol class="steps">
+      <li><b>Télécharger</b><span>Le client lit <code>mymfa-vault.json</code> et note sa version Drive.</span></li>
+      <li><b>Déchiffrer</b><span>Avec la DEK du coffre ouvert. Une autre DEK veut dire un autre coffre : pas de fusion, mot de passe de la sauvegarde demandé.</span></li>
+      <li><b>Fusionner</b><span>La copie Drive et la copie locale, selon des règles identiques sur tous les clients (JavaScript et Rust, vérifiées par des tests d'interopérabilité).</span></li>
+      <li><b>Écrire en local</b><span>La copie locale prend le résultat. Rien n'est perdu même si la suite échoue.</span></li>
+      <li><b>Renvoyer si utile</b><span>Si le résultat apporte quelque chose à Drive : rechiffré avec les enveloppes de Drive, puis envoyé.</span><span class="new">v2 : version Drive revérifiée avant l'envoi</span></li>
+      <li><b>Journaliser</b><span>Arrivées, départs, conflits, horloges suspectes, envoi ou non.</span><span class="new">v2 : nouveau</span></li>
+    </ol>
+<pre class="mermaid">
+sequenceDiagram
+    participant C as Client (ex. démon Linux)
+    participant D as Google Drive
+    participant T as Serveur de temps
+    C->>T: heure de référence (NTS)
+    T-->>C: UTC signé, décalage local mesuré
+    C->>D: lire mymfa-vault.json
+    D-->>C: coffre chiffré, version n
+    Note over C: déchiffre (DEK), fusionne<br/>champ par champ, écrit en local
+    C->>D: version toujours n ?
+    alt oui
+        C->>D: envoyer le coffre fusionné (n+1)
+    else quelqu'un a écrit entre-temps
+        C->>D: relire et refusionner
+    end
+    Note over C: journal de la synchro
+</pre>
+  </section>
+
+  <section aria-labelledby="v1-t">
+    <h2 id="v1-t">La fusion actuelle et ses limites</h2>
+    <p>Aujourd'hui, chaque élément (compte, login, passkey) porte une date <code>updatedAt</code> : l'heure de l'appareil au moment de la modification. À la fusion, l'élément entier dont la date est la plus récente gagne, et une suppression l'emporte toujours.</p>
+    <div class="table-wrap">
+      <table>
+        <thead><tr><th>Défaut</th><th>Ce qui arrive</th></tr></thead>
+        <tbody>
+          <tr><td>Horloge en retard</td><td>Une correction faite plus tard sur un appareil qui retarde perd contre la version d'avant.</td></tr>
+          <tr><td>Horloge dans le futur</td><td>Un appareil réglé en 2027 gagne toutes les fusions sur ce qu'il a touché, jusqu'en 2027.</td></tr>
+          <tr><td>Dates égales</td><td>La copie « de gauche » gagne ; selon le client, c'est la locale ou la distante. Deux appareils peuvent se renvoyer leur version sans jamais converger.</td></tr>
+          <tr><td>Élément entier</td><td>Deux changements sur des champs différents : un seul survit.</td></tr>
+          <tr><td>Suppression absolue</td><td>Une modification faite après une suppression, ailleurs, est perdue ; une suppression ne s'annule pas.</td></tr>
+          <tr><td>Traces plafonnées</td><td>Au-delà de 1 000 suppressions, les plus anciennes sont oubliées et des éléments supprimés peuvent revenir.</td></tr>
+          <tr><td>Doublons</td><td>Le doublon le plus récent est retiré sans être fusionné.</td></tr>
+          <tr><td>Aucun journal</td><td>Ce qui a été écarté disparaît sans trace.</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </section>
+
+  <section aria-labelledby="v2-t">
+    <div class="eyebrow">Proposition</div>
+    <h2 id="v2-t">Synchro v2 : l'heure ne décide plus de la justesse</h2>
+    <p>La v2 sépare deux questions. <b>Qu'est-ce qui s'enchaîne ?</b> Une horloge hybride le dit, sans dépendre de l'heure des appareils. <b>Qu'est-ce qui est vraiment simultané ?</b> Là seulement, l'heure départage, et cette heure vient d'un serveur de temps public.</p>
+    <div class="rules">
+      <div class="rule">
+        <h3>Horloge hybride (HLC) par appareil</h3>
+        <p>Chaque modification reçoit un tampon <code>(l, c, D)</code> : heure de référence en millisecondes, compteur, identifiant d'appareil. Comparé dans cet ordre, deux tampons ne sont jamais égaux.</p>
+        <div class="hlc"><span><b>l</b> 1794405900000</span><span><b>c</b> 0</span><span><b>D</b> c7e2</span></div>
+        <p>Une modification faite <b>après avoir vu</b> une version reçoit toujours un tampon plus grand qu'elle, quelle que soit l'horloge de l'appareil.</p>
+      </div>
+      <div class="rule">
+        <h3>Serveur de temps public</h3>
+        <p>L'heure de référence, c'est l'horloge de l'appareil plus un décalage mesuré auprès d'un serveur public.</p>
+        <p><b>Linux, Android</b> : NTS (NTP authentifié) sur <code>time.cloudflare.com</code>. <b>Navigateur</b> : il ne parle pas NTP ; il prend l'heure des serveurs Google renvoyée par Drive (<code>modifiedTime</code>, par TLS).</p>
+        <p>Décalage &gt; 2 s : corrigé. &gt; 5 min : alerte. Tampon reçu à plus de 5 min dans le futur : accepté, journalisé, sans contaminer l'horloge locale. Hors ligne : dernier décalage connu, marqué « non vérifié ».</p>
+      </div>
+      <div class="rule">
+        <h3>Fusion champ par champ</h3>
+        <p>Chaque champ (service, compte, étiquette, description, favori, mot de passe…) garde sa valeur et son tampon ; le plus grand tampon gagne. Le compteur HOTP prend la valeur la plus haute, pour ne jamais réutiliser un code.</p>
+        <p>Cette fusion est commutative, associative et idempotente : quel que soit l'ordre des synchros, tous les appareils finissent avec le même contenu.</p>
+      </div>
+      <div class="rule">
+        <h3>Suppressions datées</h3>
+        <p>Une suppression est un tampon. L'élément existe si l'un de ses champs est plus récent que sa suppression : une modification postérieure le fait revivre, une suppression postérieure le retire.</p>
+        <p>Les traces sont gardées tant qu'un appareil actif ne les a pas vues (registre des appareils dans le coffre), au lieu d'un plafond de 1 000.</p>
+      </div>
+      <div class="rule">
+        <h3>Conflits et journal</h3>
+        <p>Conflit : le même champ a changé des deux côtés depuis la dernière synchro de cet appareil. Il est journalisé avec les deux valeurs et le gagnant. La valeur perdante est gardée 30 jours, chiffrée, restaurable.</p>
+      </div>
+      <div class="rule">
+        <h3>Sauvegarde</h3>
+        <p>Le fichier Drive est la sauvegarde : il contient l'état fusionné de tous les appareils. En plus, chaque client garde localement les dernières versions Drive reçues (points de restauration, chiffrés) avant d'envoyer la sienne.</p>
+      </div>
+    </div>
+  </section>
+
+  <section aria-labelledby="sim-t">
+    <h2 id="sim-t">Simulateur : la même histoire, deux fusions</h2>
+    <p>Un compte 2FA « GitHub », un PC sous hyprdesk et un téléphone. Choisissez un scénario : la page rejoue les événements avec la fusion actuelle (v1) et avec la v2, puis compare ce que chaque copie contient à la fin.</p>
+    <div class="sim">
+      <div class="tabs" role="group" aria-label="Scénarios" id="tabs"></div>
+      <p class="scenario-desc" id="desc"></p>
+      <div class="table-wrap">
+        <table class="timeline">
+          <thead><tr><th>Heure réelle</th><th>Appareil</th><th>Action</th><th>Heure notée par l'appareil (v1)</th></tr></thead>
+          <tbody id="events"></tbody>
+        </table>
+      </div>
+      <p class="expected" id="expected"></p>
+      <div class="results">
+        <div class="result" id="r1"></div>
+        <div class="result" id="r2"></div>
+      </div>
+    </div>
+    <p class="note">Le simulateur exécute vraiment les deux algorithmes sur un compte réduit à trois champs. En v2, l'heure de référence est celle du serveur de temps : le décalage de l'appareil est corrigé.</p>
+  </section>
+
+  <section aria-labelledby="mig-t">
+    <h2 id="mig-t">Ce que la v2 demande</h2>
+    <div class="callout"><b>Tous les clients changent ensemble.</b> Le web, l'extension, Android et Linux partagent le format. Un client qui ignore les tampons par champ les effacerait en réécrivant un élément. Le coffre porte donc un marqueur « synchro v2 » : un ancien client le lit, refuse d'écrire et invite à se mettre à jour.</div>
+    <div class="table-wrap">
+      <table>
+        <thead><tr><th>Étape</th><th>Contenu</th></tr></thead>
+        <tbody>
+          <tr><td>Cœur commun</td><td>Horloge hybride, fusion par champ, suppressions datées, registre des appareils, journal ; <code>sync.js</code> (web) et <code>mymfa-core</code> (Rust), tests de propriétés et d'interopérabilité.</td></tr>
+          <tr><td>Référence de temps</td><td>NTS pour Linux et Android, heure de Drive pour le navigateur ; alertes d'horloge.</td></tr>
+          <tr><td>Migration</td><td>Chaque <code>updatedAt</code> devient le tampon initial de tous les champs de l'élément, appareil « hérité ».</td></tr>
+          <tr><td>Linux (LIN-06)</td><td>Démon : OAuth « Application de bureau », synchro Drive v2, points de restauration ; hyprdesk : état, journal, restauration.</td></tr>
+          <tr><td>Extension, Android</td><td>Adoption du cœur v2.</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </section>
+
+  <footer>myMFA · dépôt mindlog.mymfa.clients · tickets MFA LIN-05 à LIN-07, MLG-46 et MLG-47. Fusion actuelle : <code>android/crates/mymfa-core/src/sync.rs</code> et <code>web/js/sync.js</code>.</footer>
+</main>
+
+<script>
+(() => {
+  const BASE_H = 14, BASE_M = 0;
+  const ID = { PC: 'a3f1', TEL: 'c7e2' };
+  const NAME = { PC: 'PC (hyprdesk)', TEL: 'Téléphone' };
+  const FIELDS = ['issuer', 'tag', 'description'];
+  const LABEL = { issuer: 'service', tag: 'étiquette', description: 'description' };
+  const INIT = { issuer: 'GitHub', tag: '', description: '' };
+
+  const hhmm = (t) => {
+    const total = BASE_H * 60 + BASE_M + t;
+    const d = Math.floor(total / 1440);
+    const m = ((total % 1440) + 1440) % 1440;
+    const s = String(Math.floor(m / 60)).padStart(2, '0') + ':' + String(m % 60).padStart(2, '0');
+    if (d >= 365) return s + ' (+' + Math.round(d / 365) + ' an)';
+    return s;
+  };
+
+  const SCENARIOS = [
+    {
+      key: 'retard', title: 'Horloge en retard',
+      desc: "Le téléphone retarde de 10 minutes. Vous renommez le compte sur le PC, puis vous le corrigez sur le téléphone cinq minutes plus tard.",
+      expected: "Attendu : la dernière correction, « GitHub Entreprise », partout.",
+      skew: { PC: 0, TEL: -10 },
+      events: [
+        { t: 0, dev: 'PC', type: 'edit', field: 'issuer', value: 'GitHub Pro' },
+        { t: 1, dev: 'PC', type: 'sync' },
+        { t: 2, dev: 'TEL', type: 'sync' },
+        { t: 5, dev: 'TEL', type: 'edit', field: 'issuer', value: 'GitHub Entreprise' },
+        { t: 6, dev: 'TEL', type: 'sync' },
+        { t: 7, dev: 'PC', type: 'sync' },
+      ],
+      want: { issuer: 'GitHub Entreprise', tag: '', description: '' },
+    },
+    {
+      key: 'champs', title: 'Deux champs en parallèle',
+      desc: "Hors ligne, vous ajoutez l'étiquette « travail » sur le PC et vous renommez le compte en « GH » sur le téléphone.",
+      expected: "Attendu : les deux changements, « GH » avec l'étiquette « travail ».",
+      skew: { PC: 0, TEL: 0 },
+      events: [
+        { t: 0, dev: 'PC', type: 'edit', field: 'tag', value: 'travail' },
+        { t: 1, dev: 'TEL', type: 'edit', field: 'issuer', value: 'GH' },
+        { t: 2, dev: 'PC', type: 'sync' },
+        { t: 3, dev: 'TEL', type: 'sync' },
+        { t: 4, dev: 'PC', type: 'sync' },
+      ],
+      want: { issuer: 'GH', tag: 'travail', description: '' },
+    },
+    {
+      key: 'suppression', title: 'Modifié après une suppression',
+      desc: "Vous supprimez le compte sur le PC. Le téléphone, qui ne l'a pas encore appris, lui ajoute ensuite une description.",
+      expected: "Attendu : la dernière action gagne (la modification), et le conflit est signalé.",
+      skew: { PC: 0, TEL: 0 },
+      events: [
+        { t: 0, dev: 'PC', type: 'delete' },
+        { t: 1, dev: 'PC', type: 'sync' },
+        { t: 3, dev: 'TEL', type: 'edit', field: 'description', value: 'clé de secours' },
+        { t: 4, dev: 'TEL', type: 'sync' },
+        { t: 5, dev: 'PC', type: 'sync' },
+      ],
+      want: { issuer: 'GitHub', tag: '', description: 'clé de secours' },
+    },
+    {
+      key: 'futur', title: 'Horloge dans le futur',
+      desc: "Le téléphone est réglé un an en avance. Il renomme le compte en « X » ; plus tard, sur le PC, vous le renommez en « Y ».",
+      expected: "Attendu : « Y », la modification faite en dernier, et une alerte sur l'horloge du téléphone.",
+      skew: { PC: 0, TEL: 525600 },
+      events: [
+        { t: 0, dev: 'TEL', type: 'edit', field: 'issuer', value: 'X' },
+        { t: 1, dev: 'TEL', type: 'sync' },
+        { t: 2, dev: 'PC', type: 'sync' },
+        { t: 3, dev: 'PC', type: 'edit', field: 'issuer', value: 'Y' },
+        { t: 4, dev: 'PC', type: 'sync' },
+        { t: 5, dev: 'TEL', type: 'sync' },
+      ],
+      want: { issuer: 'Y', tag: '', description: '' },
+    },
+    {
+      key: 'egalite', title: 'Même milliseconde',
+      desc: "Les deux appareils renomment le compte à la même milliseconde, l'un en « A », l'autre en « B », puis se synchronisent chacun deux fois.",
+      expected: "Attendu : le même nom partout, peu importe lequel, avec le conflit signalé.",
+      skew: { PC: 0, TEL: 0 },
+      events: [
+        { t: 0, dev: 'PC', type: 'edit', field: 'issuer', value: 'A' },
+        { t: 0, dev: 'TEL', type: 'edit', field: 'issuer', value: 'B' },
+        { t: 1, dev: 'PC', type: 'sync' },
+        { t: 2, dev: 'TEL', type: 'sync' },
+        { t: 3, dev: 'PC', type: 'sync' },
+        { t: 4, dev: 'TEL', type: 'sync' },
+      ],
+      want: null,
+    },
+  ];
+
+  const clone = (x) => JSON.parse(JSON.stringify(x));
+
+  /* ───── v1 : élément entier, heure de l'appareil, suppression absolue ───── */
+  function runV1(sc) {
+    const init = { item: { f: { ...INIT }, upd: -100 }, tomb: false };
+    const st = { PC: clone(init), TEL: clone(init), DRIVE: clone(init) };
+    const merge = (local, remote) => {
+      if (local.tomb || remote.tomb) return { item: null, tomb: true };
+      if (!local.item) return clone(remote);
+      if (!remote.item) return clone(local);
+      return remote.item.upd > local.item.upd ? clone(remote) : clone(local); // égalité : la gauche (locale)
+    };
+    const drives = [];
+    for (const ev of sc.events) {
+      const c = st[ev.dev];
+      const wall = ev.t + sc.skew[ev.dev];
+      if (ev.type === 'edit' && c.item) { c.item.f[ev.field] = ev.value; c.item.upd = wall; }
+      if (ev.type === 'delete') { c.item = null; c.tomb = true; }
+      if (ev.type === 'sync') {
+        const m = merge(c, st.DRIVE);
+        st[ev.dev] = m;
+        if (JSON.stringify(m) !== JSON.stringify(st.DRIVE)) st.DRIVE = clone(m);
+        drives.push(view(st.DRIVE));
+      }
+    }
+    return { copies: { PC: view(st.PC), TEL: view(st.TEL), DRIVE: view(st.DRIVE) }, journal: [], drives };
+    function view(c) { return c.item ? { ...c.item.f } : null; }
+  }
+
+  /* ───── v2 : horloge hybride, champ par champ, suppressions datées ───── */
+  const cmp = (a, b) => (a[0] - b[0]) || (a[1] - b[1]) || (a[2] < b[2] ? -1 : a[2] > b[2] ? 1 : 0);
+  const max = (a, b) => (!a ? b : !b ? a : cmp(a, b) >= 0 ? a : b);
+
+  function runV2(sc) {
+    const h0 = [-100, 0, 'init'];
+    const init = { f: Object.fromEntries(FIELDS.map((k) => [k, { v: INIT[k], h: h0 }])), tomb: null };
+    const st = { PC: clone(init), TEL: clone(init), DRIVE: clone(init) };
+    const clock = { PC: { l: -100, c: 0 }, TEL: { l: -100, c: 0 } };
+    const last = { PC: h0, TEL: h0 };
+    const journal = [];
+    const alerted = {};
+    const fieldMax = (it) => FIELDS.reduce((m, k) => max(m, it.f[k].h), null);
+    const exists = (it) => !it.tomb || cmp(fieldMax(it), it.tomb) > 0;
+    // Heure de référence : serveur de temps, le décalage de l'appareil est corrigé.
+    const tick = (dev, t) => {
+      const k = clock[dev];
+      const l = Math.max(k.l, t);
+      const c = l === k.l ? k.c + 1 : 0;
+      clock[dev] = { l, c };
+      return [l, c, ID[dev]];
+    };
+    const observe = (dev, h, t) => {
+      if (!h || h[2] === 'init') return;
+      if (h[0] > t + 5) return; // futur : accepté, sans contaminer l'horloge locale
+      const k = clock[dev];
+      if (h[0] > k.l || (h[0] === k.l && h[1] > k.c)) clock[dev] = { l: h[0], c: h[1] };
+    };
+    const after = (dev, t, floor) => {
+      let h = tick(dev, t);
+      if (floor && cmp(h, floor) <= 0) { h = [floor[0], floor[1] + 1, ID[dev]]; clock[dev] = { l: h[0], c: h[1] }; }
+      return h;
+    };
+    const describe = (h) => hhmm(h[0]) + ' · ' + h[1] + ' · ' + h[2];
+
+    for (const ev of sc.events) {
+      const it = st[ev.dev];
+      if (Math.abs(sc.skew[ev.dev]) > 5 && !alerted[ev.dev]) {
+        alerted[ev.dev] = true;
+        const d = sc.skew[ev.dev];
+        const txt = Math.abs(d) >= 1440 ? Math.round(d / 1440) + ' j' : d + ' min';
+        journal.push({ cls: 'alert', text: "Horloge de " + NAME[ev.dev] + " décalée de " + (d > 0 ? '+' : '') + txt + " : corrigée par le serveur de temps, alerte affichée." });
+      }
+      if (ev.type === 'edit') {
+        if (!exists(it)) continue;
+        const h = after(ev.dev, ev.t, it.f[ev.field].h);
+        it.f[ev.field] = { v: ev.value, h };
+      }
+      if (ev.type === 'delete') {
+        it.tomb = after(ev.dev, ev.t, fieldMax(it));
+      }
+      if (ev.type === 'sync') {
+        const remote = st.DRIVE;
+        const m = { f: {}, tomb: max(it.tomb, remote.tomb) };
+        for (const k of FIELDS) {
+          const a = it.f[k], b = remote.f[k];
+          const w = cmp(a.h, b.h) >= 0 ? a : b;
+          m.f[k] = clone(w);
+          if (a.v !== b.v && cmp(a.h, last[ev.dev]) > 0 && cmp(b.h, last[ev.dev]) > 0) {
+            const lose = w === a ? b : a;
+            journal.push({ cls: 'conflict', text: "Conflit sur " + LABEL[k] + " : « " + w.v + " » (" + describe(w.h) + ") gagne contre « " + lose.v + " » (" + describe(lose.h) + ") ; « " + lose.v + " » est gardée 30 jours." });
+          }
+          observe(ev.dev, a.h, ev.t); observe(ev.dev, b.h, ev.t);
+        }
+        observe(ev.dev, m.tomb, ev.t);
+        const wasLocal = exists(it), wasRemote = exists(remote), nowExists = exists(m);
+        if (m.tomb && nowExists && (!wasLocal || !wasRemote) && cmp(m.tomb, last[ev.dev]) > 0 && cmp(fieldMax(m), last[ev.dev]) > 0) {
+          journal.push({ cls: 'conflict', text: "Supprimé sur un appareil, modifié ensuite sur l'autre : la modification est plus récente, le compte est gardé (synchro de " + NAME[ev.dev] + ")." });
+        }
+        st[ev.dev] = m;
+        const changedDrive = JSON.stringify(m) !== JSON.stringify(remote);
+        if (changedDrive) st.DRIVE = clone(m);
+        // Repère de synchro : le plus grand tampon vu (contenu fusionné ou horloge locale).
+        last[ev.dev] = max(max(fieldMax(m), m.tomb), [clock[ev.dev].l, clock[ev.dev].c, ID[ev.dev]]);
+        journal.push({ cls: '', text: hhmm(ev.t) + " · synchro de " + NAME[ev.dev] + (changedDrive ? " : Drive mis à jour." : " : rien à envoyer.") });
+      }
+    }
+    const view = (it) => (exists(it) ? Object.fromEntries(FIELDS.map((k) => [k, it.f[k].v])) : null);
+    return { copies: { PC: view(st.PC), TEL: view(st.TEL), DRIVE: view(st.DRIVE) }, journal };
+  }
+
+  const fmt = (c) => {
+    if (!c) return 'supprimé';
+    const parts = ['« ' + c.issuer + ' »'];
+    if (c.tag) parts.push('étiquette « ' + c.tag + ' »');
+    if (c.description) parts.push('« ' + c.description + ' »');
+    return parts.join(' · ');
+  };
+  const same = (a, b) => JSON.stringify(a) === JSON.stringify(b);
+
+  function verdict(sc, res) {
+    const { PC, TEL, DRIVE } = res.copies;
+    if (!same(PC, TEL) || !same(PC, DRIVE)) return { cls: 'bad', text: 'Ne converge pas' };
+    if (sc.want && !same(PC, sc.want)) return { cls: 'bad', text: 'Modification perdue' };
+    return { cls: 'ok', text: 'Convergé, rien perdu' };
+  }
+
+  function renderResult(el, title, sc, res, isV2) {
+    const v = verdict(sc, res);
+    const rows = ['PC', 'TEL', 'DRIVE'].map((k) => {
+      const c = res.copies[k];
+      return '<dt>' + (k === 'DRIVE' ? 'Drive' : NAME[k]) + '</dt><dd class="' + (c ? '' : 'gone') + '">' + fmt(c) + '</dd>';
+    }).join('');
+    let journal;
+    if (isV2) {
+      journal = res.journal.map((j) => '<li class="' + j.cls + '">' + j.text + '</li>').join('');
+    } else {
+      const flips = res.drives && sc.key === 'egalite' ? '<li class="alert">Drive a contenu successivement : ' + res.drives.map(fmt).join(' → ') + '.</li>' : '';
+      journal = flips + '<li class="none">Aucun journal : ce qui a été écarté ne laisse pas de trace.</li>';
+    }
+    el.innerHTML =
+      '<header><h3>' + title + '</h3><span class="verdict ' + v.cls + '">' + v.text + '</span></header>' +
+      '<dl class="copies">' + rows + '</dl>' +
+      '<ul class="journal">' + journal + '</ul>';
+  }
+
+  const tabs = document.getElementById('tabs');
+  function show(i) {
+    const sc = SCENARIOS[i];
+    [...tabs.children].forEach((b, j) => b.setAttribute('aria-pressed', String(j === i)));
+    document.getElementById('desc').textContent = sc.desc;
+    document.getElementById('expected').textContent = sc.expected;
+    document.getElementById('events').innerHTML = sc.events.map((ev) => {
+      const action = ev.type === 'edit' ? 'modifie ' + LABEL[ev.field] + ' : « ' + ev.value + ' »' : ev.type === 'delete' ? 'supprime le compte' : 'se synchronise avec Drive';
+      const skew = sc.skew[ev.dev];
+      const noted = ev.type === 'sync' ? '—' : hhmm(ev.t + skew);
+      return '<tr><td class="mono">' + hhmm(ev.t) + '</td><td class="dev">' + NAME[ev.dev] + '</td><td>' + action + '</td><td class="noted' + (skew && ev.type !== 'sync' ? ' skewed' : '') + '">' + noted + '</td></tr>';
+    }).join('');
+    renderResult(document.getElementById('r1'), 'Fusion actuelle (v1)', sc, runV1(sc), false);
+    renderResult(document.getElementById('r2'), 'Synchro v2', sc, runV2(sc), true);
+    try { localStorage.setItem('mymfa-sim', String(i)); } catch (e) { /* stockage indisponible */ }
+  }
+  SCENARIOS.forEach((sc, i) => {
+    const b = document.createElement('button');
+    b.type = 'button';
+    b.id = 'sc-' + sc.key;
+    b.textContent = sc.title;
+    b.addEventListener('click', () => show(i));
+    tabs.appendChild(b);
+  });
+  let start = 0;
+  try { const s = Number(localStorage.getItem('mymfa-sim')); if (s >= 0 && s < SCENARIOS.length) start = s; } catch (e) { /* rien */ }
+  show(start);
+})();
+</script>
