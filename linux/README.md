@@ -47,6 +47,8 @@ linux/
 │             (plain, DH), service (Secret Service), interface (MyMfa1),
 │             invite (pinentry de repli), presse_papiers (wl-copy),
 │             import_gnome
+├── crates/pam_mymfa/          cdylib `libpam_mymfa.so` (FFI PAM écrite à la main)
+│   └── examples/essai_pam.rs  banc d'essai : vraie pile libpam, sans root
 ├── systemd/mymfa.service      unit systemd --user (Type=dbus)
 ├── dbus/*.service             activation D-Bus (MyMfa1 et org.freedesktop.secrets)
 └── scripts/
@@ -131,6 +133,56 @@ collection éphémère « session » est ignorée. Les fichiers de
 l'installation passe avant celui de gnome-keyring pour l'activation D-Bus.
 Si l'on retire aussi `pam_gnome_keyring` de la pile PAM, gnome-keyring ne
 démarre plus du tout à la connexion.
+
+## Déverrouillage à la connexion (pam_mymfa)
+
+Installation (root, non faite par les scripts) :
+
+```sh
+install -Dm0755 linux/target/release/libpam_mymfa.so /usr/lib/security/pam_mymfa.so
+```
+
+Lignes à poser dans `/etc/pam.d/greetd` (hyprdesk les posera) — **après** les
+lignes `include` existantes, toujours en `optional` :
+
+```
+auth       include   system-local-login
+auth       optional  pam_mymfa.so
+account    include   system-local-login
+session    include   system-local-login
+session    optional  pam_mymfa.so
+password   include   system-local-login
+password   optional  pam_mymfa.so
+```
+
+- `auth` : après `pam_unix` (inclus), le module trouve le mot de passe de
+  session dans la pile (`PAM_AUTHTOK`) et le garde (`pam_set_data`, effacé au
+  nettoyage). Il ne demande jamais rien.
+- `session` : après `pam_systemd` (inclus, il crée `/run/user/UID`), il en
+  dérive la clé de session et la dépose — jamais le mot de passe — dans
+  `/run/user/UID/mymfa/session-key` (dossier 0700, fichier 0600, propriété de
+  l'utilisateur, écriture par descripteurs `openat`/`O_NOFOLLOW`/`O_EXCL`).
+  Le démon le lit, l'efface, puis descelle et ouvre le coffre. Sans sceau
+  encore, il garde la clé : le premier déverrouillage manuel scelle.
+- `password` : au changement du mot de passe de session (`passwd`), il remet
+  l'ancienne et la nouvelle clé (`/run/user/UID/mymfa/rekey`) ; le démon
+  rescelle. Changé par root (pas d'ancien mot de passe) ou hors connexion : le
+  sceau devient périmé, la connexion suivante ne l'ouvre pas, le
+  déverrouillage manuel suivant rescelle.
+- **Ne bloque jamais une connexion** : `optional`, toutes les fonctions
+  rendent `PAM_IGNORE` (ou `PAM_SUCCESS` après une remise réussie), erreurs
+  et paniques avalées.
+- Options : `debug` (une ligne syslog par étape, sans secret) ; `ask`,
+  `rundir=`, `iterations=` servent aux essais.
+
+Côté utilisateur : `mymfa seal` scelle à la demande (avec la clé reçue à la
+connexion), `mymfa seal --forget` renonce (sceau effacé, plus de sceau
+automatique jusqu'au prochain `mymfa seal`).
+
+Le sel de la clé de session est `SHA-256("mymfa:linux:seal-salt:v1" ‖ 0 ‖
+machine-id ‖ 0 ‖ uid ‖ 0 ‖ nom)` : déterministe, pour que le module PAM (root)
+n'ait pas à lire le dossier personnel. Changer de `machine-id` périme le sceau
+(déverrouillage manuel, puis nouveau sceau).
 
 ## Interface D-Bus pour hyprdesk
 

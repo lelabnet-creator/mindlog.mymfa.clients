@@ -8,6 +8,9 @@
 #      Prompt → déverrouillage par MyMfa1 → stockage effectif ; relecture ;
 #   3. session `plain` et GetSecrets à la main (gdbus) ;
 #   4. persistance : démon relancé, secret relu ; invite pinentry (factice) ;
+#   5. vraie pile PAM (pam_start_confdir) : clé remise → sceau posé au
+#      déverrouillage → connexion suivante = coffre ouvert sans saisie ;
+#      chauthtok → sceau renouvelé ;
 #   6. codes et logins par MyMfa1 (coffre du web, si la fixture d'android/ existe) ;
 #   7. reprise de gnome-keyring (si installé) : un gnome-keyring isolé tient le
 #      nom, mymfa attend, importe, puis reprend le nom quand il s'arrête.
@@ -18,6 +21,7 @@ LINUX=$(cd "$(dirname "$0")/.." && pwd)
 
 if [[ "${1:-}" != "--dedans" ]]; then
   cargo build --release --manifest-path "$LINUX/Cargo.toml" --workspace
+  cargo build --release --manifest-path "$LINUX/Cargo.toml" -p pam_mymfa --examples
   T=$(mktemp -d)
   trap 'rm -rf "$T"' EXIT
   mkdir -p "$T/services"
@@ -42,6 +46,8 @@ EOF
 fi
 
 M=$LINUX/target/release/mymfa
+SO=$LINUX/target/release/libpam_mymfa.so
+PAM=$LINUX/target/release/examples/essai_pam
 MDP='correct horse battery'
 export MYMFA_DATA_DIR=$T/data MYMFA_RUNTIME_DIR=$T/run MYMFA_PINENTRY=none
 mkdir -m 700 -p "$T/run"
@@ -134,6 +140,41 @@ MYMFA_PINENTRY="$T/pinentry" "$M" daemon 2>>"$T/demon.log" &
 attendre 'nom_tenu org.freedesktop.secrets' || echec "démon relancé"
 [[ $(timeout 30 secret-tool lookup app essai cle 1) == valeur-secrète ]] || echec "invite pinentry"
 ok "coffre verrouillé : pinentry demande, le secret est rendu"
+
+etape "5. PAM : remise, sceau, connexion sans saisie, chauthtok"
+mkdir -p "$T/pam.d"
+cat > "$T/pam.d/mymfa-essai" <<EOF
+auth     required  pam_permit.so
+auth     optional  $SO ask rundir=$T/run
+account  required  pam_permit.so
+session  required  pam_permit.so
+session  optional  $SO rundir=$T/run
+password required  pam_permit.so
+password optional  $SO ask rundir=$T/run
+EOF
+"$M" lock >/dev/null
+"$PAM" "$T/pam.d" mymfa-essai "$USER" session 'mdp-session' | grep -q "pam_open_session = 0" || echec "pile PAM"
+attendre '"$M" status | grep -q "clé de session reçue"' || echec "clé non reçue"
+[[ -e "$T/run/mymfa/session-key" ]] && echec "remise non consommée"
+ok "clé remise par pam_sm_open_session, consommée et effacée"
+echo "$MDP" | "$M" unlock >/dev/null
+"$M" status | grep -q "déverrouillage à la connexion actif" || echec "sceau non posé"
+grep -q correct "$T/data/session-seal.json" && echec "mot de passe en clair dans le sceau"
+ok "premier déverrouillage manuel : sceau posé"
+"$M" lock >/dev/null
+"$PAM" "$T/pam.d" mymfa-essai "$USER" session 'mdp-session' >/dev/null
+attendre '"$M" status | grep -q "Coffre          : déverrouillé"' || echec "pas d'ouverture à la connexion"
+ok "connexion suivante : coffre ouvert sans saisie"
+"$M" lock >/dev/null
+"$PAM" "$T/pam.d" mymfa-essai "$USER" session 'faux-mdp' >/dev/null
+sleep 3
+"$M" status | grep -q "Coffre          : verrouillé" || echec "mauvais mot de passe de session : ouvert ?!"
+ok "autre mot de passe de session : rien n'est ouvert, la connexion n'échoue pas"
+"$PAM" "$T/pam.d" mymfa-essai "$USER" chauthtok 'mdp-session' 'nouveau-mdp' >/dev/null
+sleep 2
+"$PAM" "$T/pam.d" mymfa-essai "$USER" session 'nouveau-mdp' >/dev/null
+attendre '"$M" status | grep -q "Coffre          : déverrouillé"' || echec "sceau non renouvelé"
+ok "chauthtok : sceau renouvelé, nouveau mot de passe de session accepté"
 
 FIXTURE=$LINUX/../android/crates/mymfa-core/tests/fixtures/vault-web.json
 if [[ -f $FIXTURE ]]; then

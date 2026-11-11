@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["crates/mymfa-sceau", "crates/mymfa-linux"]
+members = ["crates/mymfa-sceau", "crates/mymfa-linux", "crates/pam_mymfa"]
 
 [workspace.package]
 version = "0.1.0"
@@ -24,3 +24,6 @@ getrandom = "0.3"
 [profile.release]
 lto = "thin"
 strip = "debuginfo"
+# Pas de déroulage à travers la frontière C du module PAM : le code l'attrape
+# déjà (catch_unwind), mais un abandon ne doit jamais remonter dans libpam.
+panic = "unwind"
