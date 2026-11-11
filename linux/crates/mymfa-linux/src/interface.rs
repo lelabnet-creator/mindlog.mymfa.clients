@@ -305,6 +305,14 @@ impl MyMfa {
         Ok(service::chemin(&chemin_e))
     }
 
+    /// Santé des mots de passe (tableau de bord, MLG-46) : faibles,
+    /// réutilisés, à renouveler — ids et libellés, jamais de mot de passe.
+    async fn audit(&self) -> Result<String, ErreurMyMfa> {
+        let etat = self.d.etat();
+        let c = etat.coffre.as_ref().ok_or_else(verrouille)?;
+        Ok(crate::edition::audit(c.store()).to_string())
+    }
+
     /* ───── Synchronisation Drive (LIN-06) ───── */
 
     /// Lance un cycle de synchro maintenant, rend son statut JSON.

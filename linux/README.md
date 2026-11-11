@@ -222,6 +222,7 @@ est activable par le bus (premier appel = démarrage).
 | `SyncJournal()` | `() → s` | Journal de synchro (chiffré côté disque par la DEK) : arrivées, départs, conflits, doublons, horloges suspectes, envois. |
 | `DriveConnect()` | `() → s` | Connecte Google Drive : ouvre le navigateur (boucle locale 127.0.0.1 + PKCE, portée `drive.appdata`), échange les jetons (conservés chiffrés par la DEK), puis lance un premier cycle. Bloque jusqu'au retour du navigateur (5 min au plus). |
 | `DriveDisconnect()` | `() → ()` | Oublie la connexion : jetons effacés. |
+| `Audit()` | `() → s` | Santé des mots de passe : `{"faibles": [{id, label, niveau}], "reutilises": [{sites: [label…]}], "aRenouveler": [{id, label, change_le}]}` — ids et libellés, jamais de mot de passe. Fuites (HIBP) : côté web en attendant le port. |
 | `RestoreDrive(s revision, s password)` | `ss → ()` | Restaure une version gardée en point de restauration (les dernières versions Drive reçues, chiffrées) : le coffre est remplacé par cette version, mot de passe vérifié avant toute écriture. |
 
 ### Propriétés (lecture seule, `PropertiesChanged` émis)

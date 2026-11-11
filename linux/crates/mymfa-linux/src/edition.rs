@@ -333,6 +333,59 @@ pub fn generer(options: &Value) -> String {
 }
 
 /// Export JSON du web (comptes et historique, en clair : à ranger à l'abri).
+/* ───── Santé des mots de passe (tableau de bord, MLG-46) ───── */
+
+/// Solidité heuristique partagée avec le web (passwordStrength) : 0-4.
+fn solidite_niveau(mot: &str) -> u8 {
+    mymfa_core::vault::password_strength(mot).level
+}
+
+/// Santé des mots de passe, pour le tableau de bord de hyprdesk : faibles
+/// (solidité ≤ 2), réutilisés (même mot de passe sur plusieurs sites),
+/// à renouveler (politique : un an). Jamais de mot de passe ni d'empreinte
+/// dans la réponse : ids et libellés seulement. Les fuites (HIBP) restent
+/// côté web en attendant leur port.
+pub fn audit(store: &Store) -> Value {
+    let an = 365.0 * 24.0 * 3600.0 * 1000.0;
+    #[allow(clippy::unnecessary_cast)]
+    let maintenant = crate::chemins::maintenant() as f64 * 1000.0;
+    let mut empreintes: std::collections::BTreeMap<String, Vec<String>> = std::collections::BTreeMap::new();
+    let mut faibles: Vec<Value> = Vec::new();
+    let mut a_renouveller: Vec<Value> = Vec::new();
+    for l in store.logins() {
+        let id = l.id.clone();
+        let site = if l.title.is_empty() { l.origin.clone() } else { l.title.clone() };
+        let label = format!("{site} — {}", l.username);
+        let niveau = solidite_niveau(&l.password);
+        if niveau <= 2 {
+            faibles.push(json!({ "id": id, "label": label, "niveau": niveau }));
+        }
+        let changement = &l.passwordChangedAt;
+        if !changement.is_empty() {
+            let t = mymfa_core::sync2::iso_vers_ms(changement).unwrap_or(0);
+            if t > 0 && (maintenant as i64) - t > an as i64 {
+                a_renouveller.push(json!({ "id": id, "label": label, "change_le": changement }));
+            }
+        }
+        let empreinte = {
+            use sha2::{Digest, Sha256};
+            let h = Sha256::digest(l.password.as_bytes());
+            h[..8].iter().map(|b| format!("{b:02x}")).collect::<String>()
+        };
+        empreintes.entry(empreinte).or_default().push(label);
+    }
+    let reutilises: Vec<Value> = empreintes
+        .into_values()
+        .filter(|sites| sites.len() > 1)
+        .map(|sites| json!({ "sites": sites }))
+        .collect();
+    json!({
+        "faibles": faibles,
+        "reutilises": reutilises,
+        "aRenouveler": a_renouveller,
+    })
+}
+
 pub fn exporter(store: &Store) -> String {
     serde_json::to_string_pretty(&store.export_all()).unwrap_or_default()
 }
