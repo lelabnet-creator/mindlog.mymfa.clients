@@ -2,14 +2,16 @@
  * today.mindlog.MyMfa1 — l'interface du bureau (hyprdesk, CLI `mymfa`).
  *
  * Nom de bus `today.mindlog.MyMfa1`, objet `/today/mindlog/MyMfa1`. Contrat
- * détaillé dans linux/README.md (« Interface D-Bus pour hyprdesk »). Aucune
- * méthode ne rend un mot de passe de site : la copie passe par le
+ * détaillé dans linux/README.md (« Interface D-Bus pour hyprdesk »). Le
+ * contenu (Content) ne porte aucun secret ; un mot de passe de site ne sort
+ * qu'à la demande (RevealPassword, comme « afficher » dans le web) ou par le
  * presse-papiers, vidé au bout de 30 s.
  */
 use crate::demon::{Partage, Refus};
 use crate::presse_papiers;
 use crate::trousseau::{self, Attributs};
 use crate::coffre::{self, ErreurCoffre};
+use crate::edition;
 use crate::service::{self, ObjetElement};
 use std::collections::HashMap;
 use zbus::object_server::SignalEmitter;
@@ -41,6 +43,9 @@ pub enum ErreurMyMfa {
     VaultExists(String),
     /// Mot de passe d'un nouveau coffre trop court.
     WeakPassword(String),
+    /// Opération refusée : le message est le code i18n du web (`duplicate:<id>`,
+    /// `invalidSecret`, `invalidUri`…).
+    Invalid(String),
     Failed(String),
 }
 
@@ -54,6 +59,9 @@ impl From<Refus> for ErreurMyMfa {
             Refus::PasDeCleSession => ErreurMyMfa::NoSessionKey(m),
             Refus::CoffreExistant => ErreurMyMfa::VaultExists(m),
             Refus::MotDePasseFaible => ErreurMyMfa::WeakPassword(m),
+            Refus::Verrouille => ErreurMyMfa::Locked(m),
+            Refus::Operation(crate::edition::ErreurOp::Invalide(code)) => ErreurMyMfa::Invalid(code),
+            Refus::Operation(crate::edition::ErreurOp::Introuvable(id)) => ErreurMyMfa::NotFound(id),
             Refus::Echec(_) => ErreurMyMfa::Failed(m),
         }
     }
@@ -150,6 +158,62 @@ impl MyMfa {
             }
         };
         presse_papiers::copier(self.d.connexion.get(), valeur, sensible).await.map_err(ErreurMyMfa::Failed)
+    }
+
+    /* ───── Contenu et modifications (LIN-05) ───── */
+
+    /// Tout le contenu du coffre, en JSON, sans aucun secret : comptes,
+    /// logins, passkeys, étiquettes, historique, réglages.
+    async fn content(&self) -> Result<String, ErreurMyMfa> {
+        Ok(self.d.lire(|c| edition::contenu(c.store()).to_string())?)
+    }
+
+    /// Applique une opération JSON (`{"op": "add_account", …}`, voir
+    /// edition.rs) ; rend son résultat en JSON.
+    async fn apply(&self, operation: String) -> Result<String, ErreurMyMfa> {
+        let op: serde_json::Value =
+            serde_json::from_str(&operation).map_err(|_| ErreurMyMfa::Invalid("invalidOperation".into()))?;
+        let maintenant = coffre::maintenant_ms();
+        let r = self.d.modifier(|s| edition::appliquer(s, &op, maintenant))?;
+        Ok(r.map_err(Refus::Operation)?.to_string())
+    }
+
+    /// Aperçu d'un compte avant ajout (URI otpauth ou champs) : champs lus et
+    /// code actuel. Rien n'est écrit ; le coffre n'a pas à être ouvert.
+    async fn preview(&self, account: String) -> Result<String, ErreurMyMfa> {
+        let op: serde_json::Value =
+            serde_json::from_str(&account).map_err(|_| ErreurMyMfa::Invalid("invalidOperation".into()))?;
+        edition::apercu(&op, coffre::maintenant_ms())
+            .map(|v| v.to_string())
+            .map_err(|e| Refus::Operation(e).into())
+    }
+
+    /// Mot de passe d'un site, affiché à la demande (comme le web).
+    async fn reveal_password(&self, id: String) -> Result<String, ErreurMyMfa> {
+        self.d
+            .lire(|c| c.login(&id).map(|l| l.password.clone()))?
+            .ok_or(ErreurMyMfa::NotFound(id))
+    }
+
+    /// Mot de passe généré : `{"length": 20, "digits": true, "symbols": true, "words": false}`.
+    async fn generate(&self, options: String) -> String {
+        let o: serde_json::Value = serde_json::from_str(&options).unwrap_or_default();
+        edition::generer(&o)
+    }
+
+    /// Exporte comptes et historique (JSON du web, en clair) dans `path`.
+    async fn export_to(&self, path: String) -> Result<(), ErreurMyMfa> {
+        let texte = self.d.lire(|c| edition::exporter(c.store()))?;
+        crate::chemins::ecrire_prive(std::path::Path::new(&path), texte.as_bytes())
+            .map_err(|e| ErreurMyMfa::Failed(format!("{path} : {e}")))
+    }
+
+    /// Importe un export JSON du web (`path`) : comptes absents ajoutés.
+    async fn import_from(&self, path: String) -> Result<String, ErreurMyMfa> {
+        let payload = std::fs::read_to_string(&path).map_err(|e| ErreurMyMfa::Failed(format!("{path} : {e}")))?;
+        let op = serde_json::json!({ "op": "import", "payload": payload });
+        let r = self.d.modifier(|s| edition::appliquer(s, &op, 0))?;
+        Ok(r.map_err(Refus::Operation)?.to_string())
     }
 
     /// Scelle le mot de passe du coffre par la clé de session (pam_mymfa) :
@@ -257,6 +321,11 @@ impl MyMfa {
     #[zbus(signal)]
     async fn state_changed(e: &SignalEmitter<'_>, locked: bool) -> zbus::Result<()>;
 
+    /// Contenu du coffre changé (modification, coffre relu ou synchronisé) :
+    /// relire Content.
+    #[zbus(signal)]
+    async fn content_changed(e: &SignalEmitter<'_>) -> zbus::Result<()>;
+
     /// Une application demande le coffre (Secret Service) : hyprdesk affiche
     /// son invite et répond par Unlock. `application` : nom du processus
     /// demandeur, vide s'il est inconnu.
@@ -288,6 +357,14 @@ pub async fn annoncer_etat(d: &Partage) {
 
 pub async fn annoncer_proprietes(d: &Partage) {
     announce(d).await;
+}
+
+pub async fn annoncer_contenu(d: &Partage) {
+    if let Some(conn) = d.connexion.get() {
+        if let Ok(e) = SignalEmitter::new(conn, CHEMIN) {
+            let _ = MyMfa::content_changed(&e).await;
+        }
+    }
 }
 
 pub async fn demander_deverrouillage(d: &Partage, application: &str) {

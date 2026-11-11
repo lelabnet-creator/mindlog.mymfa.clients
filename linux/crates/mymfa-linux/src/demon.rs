@@ -44,6 +44,9 @@ pub struct Demon {
     pub connexion: OnceLock<zbus::Connection>,
     /// `true` = verrouillé. Les invites (Prompt) s'y abonnent.
     pub verrou: watch::Sender<bool>,
+    /// Compteur de changements du contenu du coffre (modification, coffre
+    /// relu) : publication des logins et signal ContentChanged s'y abonnent.
+    pub contenu: watch::Sender<u64>,
     compteur: AtomicU64,
     /// Chemins D-Bus des logins du coffre publiés (collection « mymfa »).
     publies: Mutex<Vec<String>>,
@@ -60,6 +63,10 @@ pub enum Refus {
     CoffreExistant,
     /// Mot de passe d'un nouveau coffre trop court.
     MotDePasseFaible,
+    /// Opération qui demande le coffre ouvert.
+    Verrouille,
+    /// Opération refusée (code i18n du web) ou élément introuvable.
+    Operation(crate::edition::ErreurOp),
     Echec(String),
 }
 
@@ -69,6 +76,8 @@ impl std::fmt::Display for Refus {
             Refus::Coffre(e) => e.fmt(f),
             Refus::PasDeCleSession => f.write_str("aucune clé de session (connexion sans pam_mymfa)"),
             Refus::CoffreExistant => f.write_str("un coffre existe déjà sur cet ordinateur"),
+            Refus::Verrouille => f.write_str("le coffre myMFA est verrouillé"),
+            Refus::Operation(e) => e.fmt(f),
             Refus::MotDePasseFaible => write!(f, "mot de passe trop court ({} caractères au moins)", mymfa_core::vault::PASSWORD_MIN_LENGTH),
             Refus::Echec(m) => f.write_str(m),
         }
@@ -85,6 +94,7 @@ impl Demon {
     pub fn nouveau(chemins: Chemins) -> Partage {
         let trousseau = charger_trousseau(&chemins);
         let (verrou, _) = watch::channel(true);
+        let (contenu, _) = watch::channel(0);
         Arc::new(Demon {
             chemins,
             etat: Mutex::new(Etat {
@@ -96,6 +106,7 @@ impl Demon {
             }),
             connexion: OnceLock::new(),
             verrou,
+            contenu,
             compteur: AtomicU64::new(1),
             publies: Mutex::new(Vec::new()),
         })
@@ -142,6 +153,33 @@ impl Demon {
             .map_err(|_| Refus::Echec("déverrouillage interrompu".into()))??;
         self.installer(ouvert, Some(&mot_de_passe));
         Ok(())
+    }
+
+    /* ───── Modification ───── */
+
+    /// Modifie le coffre ouvert : `f` sur le magasin ; s'il réussit, coffre
+    /// rechiffré écrit sur le disque sous le verrou d'état (deux modifications
+    /// ne se croisent pas), puis changement annoncé. Refusé par `f` : rien
+    /// n'est écrit.
+    pub fn modifier<T, E>(&self, f: impl FnOnce(&mut mymfa_core::store::Store) -> Result<T, E>) -> Result<Result<T, E>, Refus> {
+        let r = {
+            let mut etat = self.etat();
+            let c = etat.coffre.as_mut().ok_or(Refus::Verrouille)?;
+            let (r, texte) = c.modifier(f)?;
+            let Some(texte) = texte else { return Ok(r) };
+            let chemin = self.chemins.coffre();
+            chemins::ecrire_prive(&chemin, texte.as_bytes()).map_err(|e| Refus::Echec(format!("coffre non écrit : {e}")))?;
+            c.modification = chemins::modification(&chemin);
+            r
+        };
+        self.contenu.send_modify(|n| *n += 1);
+        Ok(r)
+    }
+
+    /// Lecture du coffre ouvert.
+    pub fn lire<T>(&self, f: impl FnOnce(&CoffreOuvert) -> T) -> Result<T, Refus> {
+        let etat = self.etat();
+        etat.coffre.as_ref().map(f).ok_or(Refus::Verrouille)
     }
 
     /* ───── Création ───── */
@@ -404,6 +442,8 @@ impl Demon {
                 if etat.coffre.is_some() {
                     journal!("coffre modifié sur le disque : relu");
                     etat.coffre = Some(ouvert);
+                    drop(etat);
+                    self.contenu.send_modify(|n| *n += 1);
                 }
             }
             Err(_) => {
@@ -610,6 +650,27 @@ mod tests {
             .await
             .unwrap();
         assert!(suivant.scelle());
+    }
+
+    /// Une modification réécrit le coffre : relu avec le mot de passe, elle y est ;
+    /// le contenu est annoncé ; verrouillé, rien ne s'écrit.
+    #[tokio::test]
+    async fn modification_ecrite_et_relue() {
+        let d = demon("modif");
+        let op = serde_json::json!({"op":"add_account","secret":"GEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQ","issuer":"GitHub"});
+        assert_eq!(d.modifier(|s| crate::edition::appliquer(s, &op, 0)).err(), Some(Refus::Verrouille));
+        d.deverrouiller(Zeroizing::new(MDP.into())).await.unwrap();
+        let avant = *d.contenu.borrow();
+        d.modifier(|s| crate::edition::appliquer(s, &op, 0)).unwrap().unwrap();
+        assert_eq!(*d.contenu.borrow(), avant + 1, "changement annoncé");
+        assert!(d.modifier(|s| crate::edition::appliquer(s, &op, 0)).unwrap().is_err(), "doublon");
+        assert_eq!(*d.contenu.borrow(), avant + 1, "refus : rien d'écrit ni d'annoncé");
+        d.surveiller_une_fois().await;
+        assert!(!d.verrouille(), "sa propre écriture n'est pas prise pour un remplacement");
+        d.verrouiller();
+        let relu = Demon::nouveau(d.chemins.clone());
+        relu.deverrouiller(Zeroizing::new(MDP.into())).await.unwrap();
+        assert_eq!(relu.lire(|c| c.comptes.len()).unwrap(), 1);
     }
 
     #[tokio::test]

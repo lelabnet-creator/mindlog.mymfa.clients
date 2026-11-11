@@ -208,6 +208,12 @@ est activable par le bus (premier appel = démarrage).
 | `SearchLogins(s query)` | `s → a(sssss)` | Logins : `(id, titre, hôte, adresse, identifiant)` ; recherche insensible à la casse dans titre, adresse, identifiant ; vide = tous. Jamais de mot de passe. |
 | `CopyCode(s id)` | `s → ()` | Copie le code en cours d'un compte (wl-copy). |
 | `CopyLogin(s id, s field)` | `ss → ()` | `field` = `password` (marqué sensible, effacé après 30 s s'il est toujours là) ou `username`. |
+| `Content()` | `() → s` | Tout le contenu du coffre ouvert, en JSON, **sans aucun secret** : `accounts` (sans `secret`), `logins` (sans `password`, avec `host`, `hasPassword`, `passwordLength`), `passkeys` (sans `privateKey` ni `userHandle`), `tags`, `history`, `settings`. Le même contenu que le web. |
+| `Apply(s operation)` | `s → s` | Modifie le coffre (mêmes règles que le web, `mymfa-core`) puis le réécrit, chiffré par la DEK. Opérations JSON `{"op": …}` : `add_account` (`uri` otpauth, ou `secret`, `issuer`, `account`, `type`, `algorithm`, `digits`, `period`, `counter` ; `tag`, `description`, `favorite`, `source` = `qr`/`link`/`key`), `update_account` (`id`, `patch`), `remove_account`, `next_hotp`, `touch_account`, `add_login` (`origin` complète, `username`, `password`, `title`, `note`, `tag`), `update_login`, `remove_login`, `touch_login`, `remove_passkey`, `set_setting` (`name`, `value`), `clear_history`, `import` (`payload` : export JSON). Rend le résultat en JSON (`{"id": …}`, `{"counter", "code"}`, `{"added", "skipped"}`). Une opération refusée n'écrit rien. |
+| `Preview(s account)` | `s → s` | Aperçu d'un compte avant ajout (mêmes champs que `add_account`) : champs lus et **code actuel**, pour confirmer l'activation sur le site. N'écrit rien. |
+| `RevealPassword(s id)` | `s → s` | Mot de passe d'un site, à la demande (comme « afficher » dans le web). |
+| `Generate(s options)` | `s → s` | Mot de passe généré : `{"length", "digits", "symbols", "words"}` (générateur du web). |
+| `ExportTo(s path)` / `ImportFrom(s path)` | `s → ()` / `s → s` | Export JSON du web (comptes et historique, en clair) ; import d'un tel export (comptes absents ajoutés). |
 | `Seal(s password)` | `s → ()` | Scelle le mot de passe du coffre par la clé de session reçue (vérifie le mot de passe, déverrouille au besoin). |
 | `ForgetSeal()` | `() → ()` | Efface le sceau et désactive le sceau automatique. |
 | `ImportSecret(s collection, s collection_label, s label, a{ss} attributes, ay secret, s content_type)` | `sssa{ss}ays → o` | Écrit un secret dans le trousseau local (reprise de gnome-keyring) ; remplace l'élément aux mêmes attributs. |
@@ -227,12 +233,15 @@ est activable par le bus (premier appel = démarrage).
 
 | Signal | Signature | Quand |
 |---|---|---|
+| `ContentChanged()` | `` | Après chaque changement du contenu (Apply, import, coffre relu sur le disque) : relire `Content`. |
 | `StateChanged(b locked)` | `b` | Après chaque verrouillage ou déverrouillage, quelle qu'en soit la voie (Unlock, PAM, pinentry, Lock du Secret Service). |
 | `UnlockRequested(s application)` | `s` | Une application a besoin du coffre verrouillé (Prompt du Secret Service). `application` = nom du processus demandeur (`/proc/PID/comm`), vide si inconnu. hyprdesk affiche son invite et répond par `Unlock` ; l'invite se termine d'elle-même au `StateChanged(false)`. |
 
 ### Erreurs (`today.mindlog.MyMfa1.Error.*`)
 
 `WrongPassword`, `NoVault`, `Corrupted`, `Locked`, `NotFound`,
+`Invalid` (opération refusée : le message est le code i18n du web,
+`duplicate:<id>`, `invalidSecret`, `invalidUri`, `invalidUrl`…),
 `NoSessionKey` (Seal sans connexion par pam_mymfa), `VaultExists`
 (CreateVault ou InstallVault alors qu'un coffre existe), `WeakPassword`
 (nouveau mot de passe trop court), `Failed` — chacune avec un

@@ -1,36 +1,53 @@
 /*
- * Le coffre myMFA, vu du bureau : lecture seule. Le démon déverrouille le
- * fichier `mymfa-vault.json` (même format que le web et Android, cœur
- * mymfa-core), en tire les comptes 2FA et les logins des sites, puis efface
- * les données en clair. Il n'écrit le coffre qu'à sa naissance (création ou
- * sauvegarde du web installée, demon.rs) : ensuite, sa synchronisation
- * appartient aux clients qui l'éditent.
+ * Le coffre myMFA, vu du bureau. Le démon déverrouille le fichier
+ * `mymfa-vault.json` (même format que le web et Android, cœur mymfa-core) et
+ * garde son magasin déchiffré tant qu'il est ouvert : comptes 2FA, logins et
+ * passkeys des sites, historique, réglages — le même contenu que le web, que
+ * hyprdesk consulte et modifie (LIN-05). Chaque modification réécrit le
+ * coffre chiffré par la DEK ; les enveloppes de la clé (mot de passe,
+ * passkeys) restent celles du fichier lu. Tout est effacé au verrouillage.
  */
 use mymfa_core::otp::{self, Algorithm};
 use mymfa_core::store::{Account, Login, Store};
+use mymfa_core::DataMap;
 use mymfa_core::vault::{self, Dek, VaultRecord};
 use zeroize::{Zeroize, Zeroizing};
 
-/// Coffre déverrouillé : la DEK et ce qui en a été lu.
+/// Coffre déverrouillé : la DEK, l'enregistrement lu (enveloppes de la clé)
+/// et le magasin déchiffré ; `comptes` et `logins` en sont tirés à chaque
+/// changement.
 pub struct CoffreOuvert {
     dek: Dek,
+    record: VaultRecord,
+    store: Store,
     pub comptes: Vec<Account>,
     pub logins: Vec<Login>,
     /// Date de modification du fichier lu (repérer un remplacement).
     pub modification: Option<u128>,
 }
 
+fn effacer_listes(comptes: &mut [Account], logins: &mut [Login]) {
+    for c in comptes {
+        c.secret.zeroize();
+    }
+    for l in logins {
+        l.password.zeroize();
+        l.username.zeroize();
+        l.note.zeroize();
+    }
+}
+
+fn effacer_donnees(data: &mut DataMap) {
+    for v in data.values_mut() {
+        v.zeroize();
+    }
+}
+
 impl Drop for CoffreOuvert {
     fn drop(&mut self) {
         self.dek.0.zeroize();
-        for c in &mut self.comptes {
-            c.secret.zeroize();
-        }
-        for l in &mut self.logins {
-            l.password.zeroize();
-            l.username.zeroize();
-            l.note.zeroize();
-        }
+        effacer_listes(&mut self.comptes, &mut self.logins);
+        effacer_donnees(&mut self.store.data);
     }
 }
 
@@ -71,18 +88,35 @@ pub fn deverrouiller(record: &VaultRecord, mot_de_passe: &str, modification: Opt
 /// Relit les données avec une DEK déjà connue (coffre remplacé sur le disque
 /// par une version plus récente, même clé).
 pub fn ouvrir_avec(dek: Dek, record: &VaultRecord, modification: Option<u128>) -> Result<CoffreOuvert, ErreurCoffre> {
-    let mut donnees = vault::decrypt_data(&dek, &record.data).map_err(|_| ErreurCoffre::Corrompu)?;
-    let store = Store::from_map(std::mem::take(&mut donnees));
+    let donnees = vault::decrypt_data(&dek, &record.data).map_err(|_| ErreurCoffre::Corrompu)?;
+    let store = Store::from_map(donnees);
     let comptes = store.list();
     let logins = store.logins();
-    let mut store = store;
-    for v in store.data.values_mut() {
-        v.zeroize();
-    }
-    Ok(CoffreOuvert { dek, comptes, logins, modification })
+    Ok(CoffreOuvert { dek, record: record.clone(), store, comptes, logins, modification })
 }
 
 impl CoffreOuvert {
+    /// Magasin déchiffré, en lecture.
+    pub fn store(&self) -> &Store {
+        &self.store
+    }
+
+    /// Applique `f` au magasin ; s'il réussit, rafraîchit comptes et logins et
+    /// rend le texte du coffre rechiffré (à écrire sur le disque). Un refus de
+    /// `f` ne change rien et ne rend pas de texte.
+    pub fn modifier<T, E>(&mut self, f: impl FnOnce(&mut Store) -> Result<T, E>) -> Result<(Result<T, E>, Option<String>), ErreurCoffre> {
+        let r = f(&mut self.store);
+        if r.is_err() {
+            return Ok((r, None));
+        }
+        effacer_listes(&mut self.comptes, &mut self.logins);
+        self.comptes = self.store.list();
+        self.logins = self.store.logins();
+        self.record.data = vault::encrypt_data(&self.dek, &self.store.data).map_err(|_| ErreurCoffre::Corrompu)?;
+        let texte = serde_json::to_string(&self.record).map_err(|_| ErreurCoffre::Corrompu)?;
+        Ok((r, Some(texte)))
+    }
+
     pub fn dek(&self) -> &[u8; 32] {
         &self.dek.0
     }

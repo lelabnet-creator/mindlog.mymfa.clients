@@ -836,11 +836,20 @@ pub async fn publier(d: &Partage, serveur: &ObjectServer) -> zbus::Result<()> {
     Ok(())
 }
 
-/// Après un changement d'état : éléments du coffre publiés ou retirés,
-/// propriétés Locked annoncées, signal MyMfa1.StateChanged.
-pub async fn apres_changement_de_verrou(d: &Partage) {
+/// Après un changement du contenu du coffre : logins republiés dans la
+/// collection « myMFA », collection annoncée, signal MyMfa1.ContentChanged.
+pub async fn apres_changement_de_contenu(d: &Partage) {
     let Some(conn) = d.connexion.get().cloned() else { return };
     let serveur = conn.object_server();
+    republier_coffre(d, serveur).await;
+    if let Ok(i) = serveur.interface::<_, ObjetCollection>(chemin_collection(trousseau::RESERVEE)).await {
+        let _ = i.get().await.items_changed(i.signal_emitter()).await;
+    }
+    interface::annoncer_contenu(d).await;
+}
+
+/// Éléments du coffre (logins) retirés puis publiés à nouveau s'il est ouvert.
+async fn republier_coffre(d: &Partage, serveur: &ObjectServer) {
     let verrouille = d.verrouille();
     let publies = { std::mem::take(&mut *d.publies_coffre()) };
     for p in &publies {
@@ -860,6 +869,14 @@ pub async fn apres_changement_de_verrou(d: &Partage) {
         }
         *d.publies_coffre() = nouveaux;
     }
+}
+
+/// Après un changement d'état : éléments du coffre publiés ou retirés,
+/// propriétés Locked annoncées, signal MyMfa1.StateChanged.
+pub async fn apres_changement_de_verrou(d: &Partage) {
+    let Some(conn) = d.connexion.get().cloned() else { return };
+    let serveur = conn.object_server();
+    republier_coffre(d, serveur).await;
     // Locked sur les collections et les éléments locaux (caches de libsecret).
     let (collections, elements) = {
         let etat = d.etat();

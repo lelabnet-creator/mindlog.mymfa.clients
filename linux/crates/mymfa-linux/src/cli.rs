@@ -144,6 +144,16 @@ async fn demon() -> Result<(), String> {
             }
         });
     }
+    // Chaque changement du contenu : logins republiés, ContentChanged.
+    {
+        let d = d.clone();
+        let mut contenu = d.contenu.subscribe();
+        tokio::spawn(async move {
+            while contenu.changed().await.is_ok() {
+                service::apres_changement_de_contenu(&d).await;
+            }
+        });
+    }
     // Remises PAM et coffre remplacé : une passe par seconde (un stat).
     {
         let d = d.clone();
