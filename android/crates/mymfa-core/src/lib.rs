@@ -67,7 +67,7 @@ pub fn now_iso() -> String {
     iso_from_unix(now.as_secs() as i64, now.subsec_millis())
 }
 
-fn iso_from_unix(secs: i64, millis: u32) -> String {
+pub fn iso_from_unix(secs: i64, millis: u32) -> String {
     let days = secs.div_euclid(86_400);
     let rem = secs.rem_euclid(86_400);
     let (year, month, day) = civil_from_days(days);

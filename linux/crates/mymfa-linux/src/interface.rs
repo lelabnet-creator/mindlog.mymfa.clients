@@ -7,6 +7,7 @@
  * qu'à la demande (RevealPassword, comme « afficher » dans le web) ou par le
  * presse-papiers, vidé au bout de 30 s.
  */
+use mymfa_core::AppError;
 use crate::demon::{Partage, Refus};
 use crate::presse_papiers;
 use crate::trousseau::{self, Attributs};
@@ -47,6 +48,14 @@ pub enum ErreurMyMfa {
     /// `invalidSecret`, `invalidUri`…).
     Invalid(String),
     Failed(String),
+    /// Connexion Drive refusée ou jetons périmés.
+    DriveAuth(String),
+    /// Google Drive a répondu une erreur HTTP.
+    DriveHttp(String),
+    /// Réseau indisponible (sonde NTS, requêtes Drive).
+    DriveUnavailable(String),
+    /// La sauvegarde Drive appartient à un autre coffre : pas de fusion.
+    DriveOtherVault(String),
 }
 
 impl From<Refus> for ErreurMyMfa {
@@ -63,6 +72,19 @@ impl From<Refus> for ErreurMyMfa {
             Refus::Operation(crate::edition::ErreurOp::Invalide(code)) => ErreurMyMfa::Invalid(code),
             Refus::Operation(crate::edition::ErreurOp::Introuvable(id)) => ErreurMyMfa::NotFound(id),
             Refus::Echec(_) => ErreurMyMfa::Failed(m),
+        }
+    }
+}
+
+impl From<AppError> for ErreurMyMfa {
+    fn from(e: AppError) -> Self {
+        let m = e.to_string();
+        match e.code {
+            "driveAuth" => ErreurMyMfa::DriveAuth(m),
+            "driveHttp" => ErreurMyMfa::DriveHttp(m),
+            "driveUnavailable" => ErreurMyMfa::DriveUnavailable(m),
+            "driveAutreCoffre" => ErreurMyMfa::DriveOtherVault(m),
+            _ => ErreurMyMfa::Failed(m),
         }
     }
 }
@@ -281,6 +303,41 @@ impl MyMfa {
             let _ = serveur.at(chemin_e.as_str(), ObjetElement { d: self.d.clone(), collection: cid, id: eid }).await;
         }
         Ok(service::chemin(&chemin_e))
+    }
+
+    /* ───── Synchronisation Drive (LIN-06) ───── */
+
+    /// Lance un cycle de synchro maintenant, rend son statut JSON.
+    async fn sync_now(&self) -> Result<String, ErreurMyMfa> {
+        Ok(self.d.cycler_synchro().await.to_string())
+    }
+
+    /// Statut de la synchronisation (connecté, dernière révision, en cours…).
+    async fn sync_status(&self) -> Result<String, ErreurMyMfa> {
+        Ok(self.d.statut_synchro().to_string())
+    }
+
+    /// Journal de synchro (arrivées, départs, conflits, doublons, horloges).
+    async fn sync_journal(&self) -> Result<String, ErreurMyMfa> {
+        Ok(self.d.journal_synchro().map_err(ErreurMyMfa::from)?.to_string())
+    }
+
+    /// Connecte Google Drive : ouvre le navigateur (boucle locale + PKCE),
+    /// échange les jetons, lance un premier cycle. Rend le statut.
+    async fn drive_connect(&self) -> Result<String, ErreurMyMfa> {
+        Ok(self.d.connecter_drive().await.map_err(ErreurMyMfa::from)?.to_string())
+    }
+
+    /// Oublie la connexion Drive : jetons effacés, plus de synchro.
+    async fn drive_disconnect(&self) -> Result<(), ErreurMyMfa> {
+        Ok(self.d.deconnecter_drive())
+    }
+
+    /// Restaure une version gardée en point de restauration (révision Drive) :
+    /// le coffre actuel est remplacé par cette version (mot de passe demandé).
+    async fn restore_drive(&self, revision: String, password: String) -> Result<(), ErreurMyMfa> {
+        let mdp = Zeroizing::new(password);
+        Ok(self.d.restaurer_drive(&revision, mdp).await?)
     }
 
     #[zbus(property)]

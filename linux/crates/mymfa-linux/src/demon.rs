@@ -9,6 +9,7 @@
  * dans spawn_blocking).
  */
 use crate::chemins::{self, Chemins};
+use crate::drive::{Jetons, Pkce, SauvegardeDrive};
 use crate::coffre::{self, CoffreOuvert, ErreurCoffre};
 use crate::session::Chiffrement;
 use crate::trousseau::Trousseau;
@@ -50,6 +51,47 @@ pub struct Demon {
     compteur: AtomicU64,
     /// Chemins D-Bus des logins du coffre publiés (collection « mymfa »).
     publies: Mutex<Vec<String>>,
+    /// Synchronisation Drive (LIN-06) : état par appareil, jetons, journal,
+    /// points de restauration — verrou séparé du coffre (jamais tenu à travers
+    /// un .await), demandes de cycle regroupées.
+    pub synchro: Mutex<Synchro>,
+    /// Un cycle de synchro est demandé (modification, ouverture, SyncNow).
+    pub demande_synchro: tokio::sync::Notify,
+}
+
+/// Tout ce que la synchronisation Drive garde hors du coffre.
+pub struct Synchro {
+    /// État de l'appareil pour sync2::fusion (identifiant, horloge, repère).
+    pub etat: Option<mymfa_core::sync2::EtatSynchro>,
+    /// La sauvegarde Drive telle que nous l'avons lue (id + révision).
+    pub sauvegarde: Option<SauvegardeDrive>,
+    /// Jetons OAuth (mémoire ; persistés chiffrés dans mymfa-drive.json).
+    pub jetons: Option<Jetons>,
+    /// Heure de référence T() : horloge corrigée par la sonde NTS (SYN-08).
+    pub reference: mymfa_core::temps::ReferenceTemps,
+    /// Journal de synchro (persisté chiffré dans mymfa-journal.json).
+    pub journal: crate::synchro::Journal,
+    /// Points de restauration (persistés chiffrés dans mymfa-drive-backup.json).
+    pub points: crate::synchro::Points,
+    /// Un cycle tourne (SyncNow pendant un cycle : statut « en cours »).
+    pub en_cours: bool,
+    /// Dernier statut sérialisé (SyncStatus le rend tel quel).
+    pub statut: Option<serde_json::Value>,
+}
+
+impl Synchro {
+    fn neuf(appareil: &str) -> Self {
+        Self {
+            etat: Some(mymfa_core::sync2::EtatSynchro::nouvelle(appareil, chemins::maintenant() as i64)),
+            sauvegarde: None,
+            jetons: None,
+            reference: mymfa_core::temps::ReferenceTemps::nouvelle(),
+            journal: crate::synchro::Journal::default(),
+            points: crate::synchro::Points::default(),
+            en_cours: false,
+            statut: None,
+        }
+    }
 }
 
 pub type Partage = Arc<Demon>;
@@ -93,6 +135,7 @@ impl From<ErreurCoffre> for Refus {
 impl Demon {
     pub fn nouveau(chemins: Chemins) -> Partage {
         let trousseau = charger_trousseau(&chemins);
+        let synchro = charger_synchro(&chemins);
         let (verrou, _) = watch::channel(true);
         let (contenu, _) = watch::channel(0);
         Arc::new(Demon {
@@ -109,6 +152,8 @@ impl Demon {
             contenu,
             compteur: AtomicU64::new(1),
             publies: Mutex::new(Vec::new()),
+            synchro: Mutex::new(synchro),
+            demande_synchro: tokio::sync::Notify::new(),
         })
     }
 
@@ -173,6 +218,7 @@ impl Demon {
             r
         };
         self.contenu.send_modify(|n| *n += 1);
+        self.demande_synchro.notify_one();
         Ok(r)
     }
 
@@ -266,8 +312,36 @@ impl Demon {
             journal!("coffre déverrouillé ({} comptes, {} logins)", ouvert.comptes.len(), ouvert.logins.len());
             etat.coffre = Some(ouvert);
         }
+        // Jetons, journal et points de restauration : chiffrés par la DEK, ils
+        // ne s'ouvrent qu'ici. Une clé qui n'ouvre plus (coffre recréé
+        // ailleurs) : la connexion Drive est oubliée, pas les fichiers.
+        {
+            let dek = self.etat().coffre.as_ref().map(|c| c.dek_pleine());
+            if let Some(dek) = dek {
+                let mut s = self.synchro();
+                let jetons = chemins::lire(&self.chemins.drive_jetons()).unwrap_or_default();
+                if jetons.trim().is_empty() {
+                    s.jetons = None;
+                } else if let Ok(Some(j)) = crate::drive::jetons_depuis_texte(&jetons, &dek) {
+                    s.jetons = Some(j);
+                } else {
+                    journal!("jetons Drive illisibles avec ce coffre : connexion oubliée");
+                    let _ = std::fs::remove_file(self.chemins.drive_jetons());
+                    s.jetons = None;
+                }
+                let brut = chemins::lire(&self.chemins.drive_journal()).unwrap_or_default();
+                if let Ok(j) = crate::synchro::Journal::depuis_texte(&brut, &dek) {
+                    s.journal = j;
+                }
+                let brut = chemins::lire(&self.chemins.drive_points()).unwrap_or_default();
+                if let Ok(p) = crate::synchro::Points::depuis_texte(&brut, &dek) {
+                    s.points = p;
+                }
+            }
+        }
         self.persister();
         self.verrou.send_replace(false);
+        self.demande_synchro.notify_one(); // à l'ouverture du coffre : cycle
     }
 
     pub fn verrouiller(&self) -> bool {
@@ -474,6 +548,331 @@ pub fn lire_sceau(chemins: &Chemins) -> Option<Sceau> {
 fn ecrire_sceau(chemins: &Chemins, sceau: &Sceau) -> std::io::Result<()> {
     let texte = serde_json::to_string_pretty(sceau).expect("sérialisation interne");
     chemins::ecrire_prive(&chemins.sceau(), texte.as_bytes())
+}
+
+
+/* ───── Synchronisation Drive (LIN-06) ───── */
+
+impl Demon {
+    pub fn synchro(&self) -> MutexGuard<'_, Synchro> {
+        self.synchro.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
+    /// Le statut JSON rendu à hyprdesk (SyncNow, SyncStatus, fin de cycle).
+    pub fn statut_synchro(&self) -> serde_json::Value {
+        let s = self.synchro();
+        let ouvert = !self.verrouille();
+        serde_json::json!({
+            "connecte": s.jetons.is_some(),
+            "coffreOuvert": ouvert,
+            "enCours": s.en_cours,
+            "horlogeVerifiee": s.reference.verifiee(),
+            "alerteHorloge": s.reference.alerte().map(|d| d.to_string()),
+            "revision": s.sauvegarde.as_ref().map(|sauv| sauv.revision.clone()),
+            "modifieeLe": s.sauvegarde.as_ref().map(|sauv| sauv.modifiee_le.clone()),
+            "statut": s.statut,
+        })
+    }
+
+    /// Le journal de synchro, chiffré et conservé (restaurable) — rendu en JSON
+    /// sans les valeurs (les textes suffisent à la fenêtre hyprdesk).
+    pub fn journal_synchro(&self) -> Result<serde_json::Value, Refus> {
+        let s = self.synchro();
+        Ok(serde_json::json!({
+            "entrees": s.journal.entrees.iter().map(|e| serde_json::json!({
+                "genre": e.genre, "cle": e.cle, "champ": e.champ, "texte": e.texte, "at": e.at,
+            })).collect::<Vec<_>>(),
+        }))
+    }
+
+    /// Restaure une version gardée en point de restauration : même chemin que
+    /// l'installation d'une sauvegarde (mot de passe de la version demandé,
+    /// coffre remplacé puis ouvert et scellé). Le coffre actuel reste sous
+    /// PREVIOUS équivalent ? Non : c'est une restauration complète, comme le web.
+    pub async fn restaurer_drive(self: &Partage, revision: &str, mot_de_passe: Zeroizing<String>) -> Result<(), Refus> {
+        let enveloppe = {
+            let s = self.synchro();
+            s.points
+                .sauvegardes
+                .iter()
+                .find(|p| p.revision == revision)
+                .map(|p| p.enveloppe.to_string())
+                .ok_or_else(|| Refus::Echec(format!("revision {revision} introuvable dans les points de restauration")))?
+        };
+        self.installer_sauvegarde(enveloppe, mot_de_passe).await
+    }
+
+    /// Connecte Drive : boucle locale + PKCE, navigateur ouvert, jetons échangés
+    /// puis conservés chiffrés par la DEK. Renvoie le statut.
+    pub async fn connecter_drive(self: &Partage) -> Result<serde_json::Value, Refus> {
+        if self.verrouille() {
+            return Err(Refus::Verrouille);
+        }
+        let pkce = Pkce::nouveau();
+        let etat_cs = crate::drive::b64url(&mymfa_core::vault::random_bytes(16));
+        let ecouteur = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .map_err(|e| Refus::Echec(format!("port de boucle locale : {e}")))?;
+        let port = ecouteur.local_addr().map_err(|e| Refus::Echec(e.to_string()))?.port();
+        let url = crate::drive::url_autorisation(&pkce.challenge, port, &etat_cs);
+        // Le navigateur s'ouvre ; l'URL est journalisée si xdg-open manque.
+        match tokio::process::Command::new("xdg-open").arg(&url).spawn() {
+            Ok(_) => journal!("connexion Drive : navigateur ouvert"),
+            Err(e) => journal!("connexion Drive : ouvrez cette adresse : {url} ({e})"),
+        }
+        let code = crate::drive::attendre_code(ecouteur, &etat_cs, std::time::Duration::from_secs(5 * 60))
+            .await
+            .map_err(|_| Refus::Echec("connexion Drive interrompue ou refusée".into()))?;
+        let jetons = crate::drive::echanger_code(&crate::drive::transport_reel(), &code, &pkce.verifier, port)
+            .await
+            .map_err(refus_drive)?;
+        self.poser_jetons(jetons).await?;
+        self.cycler_synchro().await;
+        Ok(self.statut_synchro())
+    }
+
+    /// Oublie la connexion Drive : jetons effacés (mémoire et disque).
+    pub fn deconnecter_drive(&self) {
+        let _ = std::fs::remove_file(self.chemins.drive_jetons());
+        let mut s = self.synchro();
+        s.jetons = None;
+        s.sauvegarde = None;
+        s.statut = Some(serde_json::json!({ "etat": "deconnecte" }));
+    }
+
+    async fn poser_jetons(self: &Partage, jetons: Jetons) -> Result<(), Refus> {
+        let (dek, texte) = {
+            let etat = self.etat();
+            let c = etat.coffre.as_ref().ok_or(Refus::Verrouille)?;
+            let dek = c.dek_pleine();
+            (dek.clone(), c.texte())
+        };
+        let _ = texte; // le coffre n'est pas réécrit ici : seuls les jetons changent
+        let texte_jetons = crate::drive::jetons_en_texte(&jetons, &dek).map_err(refus_drive)?;
+        chemins::ecrire_prive(&self.chemins.drive_jetons(), texte_jetons.as_bytes())
+            .map_err(|e| Refus::Echec(format!("jetons Drive non écrits : {e}")))?;
+        self.synchro().jetons = Some(jetons);
+        Ok(())
+    }
+
+    /// Un cycle complet de synchro : lire Drive (révision notée), déchiffrer,
+    /// sonder le temps (NTS), fusionner champ par champ, écrire en local,
+    /// revérifier la révision avant l'envoi (course → relire et refusionner,
+    /// trois tours au plus), renvoyer si le résultat apporte quelque chose,
+    /// journaliser. Verrou du coffre jamais tenu à travers un .await.
+    pub async fn cycler_synchro(self: &Partage) -> serde_json::Value {
+        {
+            let mut s = self.synchro();
+            if s.en_cours {
+                return s.statut.clone().unwrap_or_else(|| serde_json::json!({ "enCours": true }));
+            }
+            s.en_cours = true;
+        }
+        let statut = self.cycle_interne().await;
+        self.synchro().en_cours = false;
+        self.synchro().statut = Some(statut.clone());
+        statut
+    }
+
+    async fn cycle_interne(self: &Partage) -> serde_json::Value {
+        let transport = crate::drive::transport_reel();
+        for tour in 1..=3 {
+            // ── Capture (verrou du coffre, puis verrou de synchro) : la copie
+            // locale, le coffre chiffré, la DEK, l'état de fusion, le journal.
+            let (dek, local, mut etat, mut sauvegarde, jetons, mut reference, mut journal, mut points) = {
+                let etat_demon = self.etat();
+                let Some(c) = etat_demon.coffre.as_ref() else {
+                    return serde_json::json!({ "etat": "verrouille" });
+                };
+                let s = self.synchro();
+                if s.jetons.is_none() {
+                    return serde_json::json!({ "etat": "nonConnecte" });
+                }
+                (
+                    c.dek_pleine(),
+                    c.donnees(),
+                    s.etat.clone().unwrap_or_else(|| mymfa_core::sync2::EtatSynchro::nouvelle("mymfa", chemins::maintenant() as i64)),
+                    s.sauvegarde.clone(),
+                    s.jetons.clone(),
+                    s.reference.clone(),
+                    s.journal.clone(),
+                    s.points.clone(),
+                )
+            };
+            let Some(mut jetons) = jetons else {
+                return serde_json::json!({ "etat": "nonConnecte" });
+            };
+
+            // ── Jeton d'accès périmé : rafraîchi avant toute requête (le jeton
+            // de rafraîchissement, lui, vit des années).
+            let seconde = chemins::maintenant();
+            if jetons.acces_expire_le <= seconde {
+                match crate::drive::rafraichir(&transport, &jetons).await {
+                    Ok(renouveles) => {
+                        jetons = renouveles;
+                        if let Some(dek) = self.etat().coffre.as_ref().map(|c| c.dek_pleine()) {
+                            if let Ok(texte) = crate::drive::jetons_en_texte(&jetons, &dek) {
+                                let _ = chemins::ecrire_prive(&self.chemins.drive_jetons(), texte.as_bytes());
+                            }
+                        }
+                        self.synchro().jetons = Some(jetons.clone());
+                    }
+                    Err(e) => {
+                        journal!("synchro : jetons non renouvelés ({})", e.code);
+                        self.terminer_cycle(&etat, sauvegarde, jetons, reference, journal, points);
+                        return serde_json::json!({ "etat": "erreur", "code": "driveAuth" });
+                    }
+                }
+            }
+
+            // ── Heure de référence (SYN-08) : sonde NTS, dernier décalage sinon.
+            match mymfa_core::temps::sonde::synchroniser(&mut reference, None).await {
+                Ok(_) => {}
+                Err(_) => journal!("temps : sonde NTS injoignable, dernier décalage connu conservé"),
+            }
+            let maintenant = reference.maintenant(chemins::maintenant() as i64);
+
+            // ── Lire Drive et déchiffrer (une autre DEK : pas de fusion).
+            let distante = match crate::synchro::lire_distante(&transport, &jetons, &dek, &mut points).await {
+                Ok(d) => d,
+                Err(e) => {
+                    let code = e.code.to_string();
+                    journal!("synchro : lecture Drive impossible ({code})");
+                    self.terminer_cycle(&etat, sauvegarde, jetons, reference, journal, points);
+                    return serde_json::json!({ "etat": "erreur", "code": code });
+                }
+            };
+            if let Some((_, sauv)) = &distante {
+                // L'heure des serveurs Google, consignée pour le journal (la
+                // référence du web ; le démon, lui, fait NTS).
+                if !sauv.modifiee_le.is_empty() {
+                    journal!("Drive : sauvegarde modifiée {}", sauv.modifiee_le);
+                }
+            }
+
+            // ── Fusion champ par champ (SYN-07) : pure, aucune écriture.
+            let vide = mymfa_core::DataMap::new();
+            let (fusion, rapport) =
+                mymfa_core::sync2::fusion(&local, distante.as_ref().map(|(m, _)| m).unwrap_or(&vide), &mut etat, maintenant);
+
+            // ── Écrire en local si la fusion a changé quelque chose (rien
+            // n'est écrit si verrouillé entre-temps : statut et fin).
+            if fusion != local {
+                let ecrit = self.modifier(|store| {
+                    store.data = fusion.clone();
+                    Ok::<(), mymfa_core::AppError>(())
+                });
+                match ecrit {
+                    Ok(Ok(())) => {}
+                    Ok(Err(_)) => {}
+                    Err(Refus::Verrouille) => {
+                        self.terminer_cycle(&etat, sauvegarde, jetons, reference, journal, points);
+                        return serde_json::json!({ "etat": "verrouille" });
+                    }
+                    Err(e) => {
+                        journal!("synchro : coffre non écrit ({e})");
+                        self.terminer_cycle(&etat, sauvegarde, jetons, reference, journal, points);
+                        return serde_json::json!({ "etat": "erreur", "code": "driveEcriture" });
+                    }
+                }
+            }
+
+            // ── Envoyer si le résultat apporte quelque chose (le record local,
+            // rechiffré par modifier, EST la version fusionnée).
+            let record_json = {
+                let etat_demon = self.etat();
+                match etat_demon.coffre.as_ref() {
+                    Some(c) => c.texte().unwrap_or_default(),
+                    None => {
+                        self.terminer_cycle(&etat, sauvegarde, jetons, reference, journal, points);
+                        return serde_json::json!({ "etat": "verrouille" });
+                    }
+                }
+            };
+            match crate::synchro::pousser(&transport, &jetons, sauvegarde.as_ref(), &record_json, rapport.a_envoyer).await {
+                Ok(crate::synchro::Envoi::Pose(revision)) => {
+                    if !revision.is_empty() {
+                        if let Some(sauv) = &mut sauvegarde {
+                            sauv.revision = revision;
+                        }
+                    }
+                    let envoye = !rapport.entrees.is_empty() || rapport.a_envoyer;
+                    journal.ajouter_rapport(&rapport, Some(envoye));
+                    self.terminer_cycle(&etat, sauvegarde, jetons, reference, journal, points);
+                    return serde_json::json!({ "etat": "ok", "envoye": rapport.a_envoyer, "tour": tour });
+                }
+                Ok(crate::synchro::Envoi::Course) => {
+                    journal!("synchro : Drive a changé pendant le cycle, relecture (tour {tour})");
+                    journal.ajouter_rapport(&rapport, None);
+                    continue;
+                }
+                Err(e) => {
+                    let code = e.code.to_string();
+                    journal!("synchro : envoi impossible ({code})");
+                    journal.ajouter_rapport(&rapport, None);
+                    self.terminer_cycle(&etat, sauvegarde, jetons, reference, journal, points);
+                    return serde_json::json!({ "etat": "erreur", "code": code });
+                }
+            }
+        }
+        serde_json::json!({ "etat": "course", "code": "driveCourse" })
+    }
+
+    /// Persister l'état de synchro (mymfa-sync.json), le journal et les points
+    /// (chiffrés), et la sauvegarde vue (révision courante) — puis annoncer.
+    fn terminer_cycle(
+        &self,
+        etat_fusion: &mymfa_core::sync2::EtatSynchro,
+        mut sauvegarde: Option<SauvegardeDrive>,
+        jetons: Jetons,
+        reference: mymfa_core::temps::ReferenceTemps,
+        journal: crate::synchro::Journal,
+        points: crate::synchro::Points,
+    ) {
+        // Sans id de sauvegarde (premier envoi multipart), la prochaine
+        // lecture (lire_distante) posera l'id et la révision.
+        let _ = &mut sauvegarde;
+        {
+            let mut s = self.synchro();
+            s.etat = Some(etat_fusion.clone());
+            s.sauvegarde = sauvegarde.clone();
+            s.jetons = Some(jetons);
+            s.reference = reference;
+            s.journal = journal.clone();
+            s.points = points.clone();
+        }
+        let texte_etat = crate::synchro::etat_en_texte(etat_fusion, sauvegarde.as_ref());
+        let _ = chemins::ecrire_prive(&self.chemins.drive_etat(), texte_etat.as_bytes());
+        if let Some(dek) = self.etat().coffre.as_ref().map(|c| c.dek_pleine()) {
+            if let Ok(texte) = journal.en_texte(&dek) {
+                let _ = chemins::ecrire_prive(&self.chemins.drive_journal(), texte.as_bytes());
+            }
+            if let Ok(texte) = points.en_texte(&dek) {
+                let _ = chemins::ecrire_prive(&self.chemins.drive_points(), texte.as_bytes());
+            }
+        }
+    }
+}
+
+/// Erreur AppError (codes i18n du web) → Refus du démon.
+fn refus_drive(e: mymfa_core::AppError) -> Refus {
+    Refus::Echec(format!("drive : {}", e.code))
+}
+
+/// Charge l'état de synchro persisté (identifiant d'appareil, horloge, repère,
+/// révision Drive vue). Rien de secret : fichier en clair.
+fn charger_synchro(chemins: &Chemins) -> Synchro {
+    let brut = chemins::lire(&chemins.drive_etat()).unwrap_or_default();
+    let relu = crate::synchro::etat_depuis_texte(&brut).ok().flatten();
+    match relu {
+        Some((etat, sauvegarde)) => {
+            let mut s = Synchro::neuf(&etat.appareil);
+            s.etat = Some(etat);
+            s.sauvegarde = sauvegarde;
+            s
+        }
+        None => Synchro::neuf(&format!("mymfa-{}", crate::drive::b64url(&mymfa_core::vault::random_bytes(6)))),
+    }
 }
 
 #[cfg(test)]

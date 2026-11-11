@@ -217,6 +217,12 @@ est activable par le bus (premier appel = démarrage).
 | `Seal(s password)` | `s → ()` | Scelle le mot de passe du coffre par la clé de session reçue (vérifie le mot de passe, déverrouille au besoin). |
 | `ForgetSeal()` | `() → ()` | Efface le sceau et désactive le sceau automatique. |
 | `ImportSecret(s collection, s collection_label, s label, a{ss} attributes, ay secret, s content_type)` | `sssa{ss}ays → o` | Écrit un secret dans le trousseau local (reprise de gnome-keyring) ; remplace l'élément aux mêmes attributs. |
+| `SyncNow()` | `() → s` | Lance un cycle de synchronisation Drive maintenant, rend son statut JSON (`{"etat": "ok", "envoye": …}` ; `verrouille`, `nonConnecte`, `erreur`+`code`…). |
+| `SyncStatus()` | `() → s` | État de la synchronisation : `connecte`, `coffreOuvert`, `enCours`, `horlogeVerifiee`, `alerteHorloge`, `revision`, `modifieeLe`, dernier `statut`. |
+| `SyncJournal()` | `() → s` | Journal de synchro (chiffré côté disque par la DEK) : arrivées, départs, conflits, doublons, horloges suspectes, envois. |
+| `DriveConnect()` | `() → s` | Connecte Google Drive : ouvre le navigateur (boucle locale 127.0.0.1 + PKCE, portée `drive.appdata`), échange les jetons (conservés chiffrés par la DEK), puis lance un premier cycle. Bloque jusqu'au retour du navigateur (5 min au plus). |
+| `DriveDisconnect()` | `() → ()` | Oublie la connexion : jetons effacés. |
+| `RestoreDrive(s revision, s password)` | `ss → ()` | Restaure une version gardée en point de restauration (les dernières versions Drive reçues, chiffrées) : le coffre est remplacé par cette version, mot de passe vérifié avant toute écriture. |
 
 ### Propriétés (lecture seule, `PropertiesChanged` émis)
 
@@ -244,8 +250,32 @@ est activable par le bus (premier appel = démarrage).
 `duplicate:<id>`, `invalidSecret`, `invalidUri`, `invalidUrl`…),
 `NoSessionKey` (Seal sans connexion par pam_mymfa), `VaultExists`
 (CreateVault ou InstallVault alors qu'un coffre existe), `WeakPassword`
-(nouveau mot de passe trop court), `Failed` — chacune avec un
-message en français affichable.
+(nouveau mot de passe trop court), `DriveAuth` (connexion Drive refusée ou
+jetons périmés), `DriveHttp`, `DriveUnavailable` (réseau), `DriveOtherVault`
+(la sauvegarde Drive appartient à un autre coffre : pas de fusion),
+`Failed` — chacune avec un message en français affichable.
+
+### Synchronisation Google Drive (LIN-06, synchro v2)
+
+Un seul fichier, `mymfa-vault.json` dans `appDataFolder`, le même que la
+sauvegarde du web — toujours chiffré de bout en bout. Le cycle suit la v2
+(SYN-07) : lire en notant la révision, déchiffrer avec la DEK du coffre,
+fusionner champ par champ (horloge hybride, suppressions datées, doublons
+fusionnés), écrire en local, revérifier la révision avant l'envoi — si Drive a
+changé, relire et refusionner (trois tours au plus) — puis renvoyer si le
+résultat apporte quelque chose. Déclenché à l'ouverture du coffre, après
+chaque modification (regroupée), toutes les 15 minutes et à la demande.
+L'heure de référence T() vient d'une sonde NTS (`time.cloudflare.com`,
+RFC 8915 — fonctionnalité « nts » du cœur, SYN-08) ; dernier décalage connu
+conservé hors ligne, horloges suspectes journalisées.
+
+Fichiers (dossier des données, 0600) : `mymfa-drive.json` (jetons OAuth
+chiffrés par la DEK — coffre verrouillé, plus de jeton), `mymfa-sync.json`
+(état de l'appareil : identifiant, horloge hybride, repère, révision vue —
+rien de secret), `mymfa-journal.json` (journal, chiffré), `mymfa-drive-backup.json`
+(points de restauration : les dernières versions Drive reçues, chiffrées).
+Une sauvegarde chiffrée par une autre DEK (un autre coffre) n'est jamais
+fusionnée : erreur `DriveOtherVault`, l'utilisateur décide (restaurer ou pas).
 
 ### Invite de déverrouillage
 

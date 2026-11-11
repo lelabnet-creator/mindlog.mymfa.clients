@@ -154,6 +154,30 @@ async fn demon() -> Result<(), String> {
             }
         });
     }
+    // Synchronisation Drive : un cycle toutes les 15 minutes, et après chaque
+    // modification (demandes regroupées : 2 s d'attente, puis une seule passe).
+    {
+        let d = d.clone();
+        tokio::spawn(async move {
+            let mut interval = tokio::time::interval(std::time::Duration::from_secs(15 * 60));
+            loop {
+                let demande = tokio::select! {
+                    _ = interval.tick() => false,
+                    _ = d.demande_synchro.notified() => true,
+                };
+                if demande {
+                    // Regroupement : les modifications en rafale font une passe.
+                    tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+                    use futures_util::FutureExt;
+                    while d.demande_synchro.notified().now_or_never().is_some() {}
+                }
+                let statut = d.cycler_synchro().await;
+                if statut["etat"] != "verrouille" && statut["etat"] != "nonConnecte" {
+                    interface::annoncer_proprietes(&d).await;
+                }
+            }
+        });
+    }
     // Remises PAM et coffre remplacé : une passe par seconde (un stat).
     {
         let d = d.clone();

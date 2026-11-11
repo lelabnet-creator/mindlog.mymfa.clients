@@ -101,6 +101,21 @@ impl CoffreOuvert {
         &self.store
     }
 
+    /// Copie du magasin déchiffré (fusion v2 : la copie locale de la synchro).
+    pub fn donnees(&self) -> DataMap {
+        self.store.data.clone()
+    }
+
+    /// DEK du coffre (jetons et journal de Drive sont chiffrés avec).
+    pub fn dek_pleine(&self) -> Dek {
+        Dek(self.dek.0)
+    }
+
+    /// Le coffre chiffré, en texte (ce qui part sur Drive).
+    pub fn texte(&self) -> Result<String, ErreurCoffre> {
+        serde_json::to_string(&self.record).map_err(|_| ErreurCoffre::Corrompu)
+    }
+
     /// Applique `f` au magasin ; s'il réussit, rafraîchit comptes et logins et
     /// rend le texte du coffre rechiffré (à écrire sur le disque). Un refus de
     /// `f` ne change rien et ne rend pas de texte.

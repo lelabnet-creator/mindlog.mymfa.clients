@@ -13,6 +13,8 @@ mod chemins;
 mod cli;
 mod coffre;
 mod demon;
+mod drive;
+mod synchro;
 mod edition;
 mod import_gnome;
 mod interface;

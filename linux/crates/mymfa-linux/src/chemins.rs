@@ -21,6 +21,14 @@ pub const TROUSSEAU: &str = "mymfa-keyring.json";
 pub const SCEAU: &str = "session-seal.json";
 /// Présent : l'utilisateur a renoncé au déverrouillage à la connexion.
 pub const SANS_SCEAU: &str = "no-seal";
+/// Jetons OAuth Drive, chiffrés par la DEK (LIN-06).
+pub const JETONS_DRIVE: &str = "mymfa-drive.json";
+/// État de synchro de l'appareil : identifiant, horloge, révision vue (rien de secret).
+pub const ETAT_SYNCHRO: &str = "mymfa-sync.json";
+/// Journal de synchro, chiffré par la DEK.
+pub const JOURNAL_SYNCHRO: &str = "mymfa-journal.json";
+/// Points de restauration : dernières versions Drive reçues, chiffrées.
+pub const POINTS_DRIVE: &str = "mymfa-drive-backup.json";
 
 #[derive(Debug, Clone)]
 pub struct Chemins {
@@ -54,6 +62,22 @@ impl Chemins {
 
     pub fn sceau(&self) -> PathBuf {
         self.donnees.join(SCEAU)
+    }
+
+    pub fn drive_jetons(&self) -> PathBuf {
+        self.donnees.join(JETONS_DRIVE)
+    }
+
+    pub fn drive_etat(&self) -> PathBuf {
+        self.donnees.join(ETAT_SYNCHRO)
+    }
+
+    pub fn drive_journal(&self) -> PathBuf {
+        self.donnees.join(JOURNAL_SYNCHRO)
+    }
+
+    pub fn drive_points(&self) -> PathBuf {
+        self.donnees.join(POINTS_DRIVE)
     }
 
     pub fn sans_sceau(&self) -> PathBuf {
