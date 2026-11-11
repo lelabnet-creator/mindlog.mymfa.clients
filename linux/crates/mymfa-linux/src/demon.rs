@@ -277,6 +277,20 @@ impl Demon {
         }
     }
 
+    /// Arrêt du démon (mise à jour, redémarrage de l'unit) : la clé de session
+    /// qui attend encore est redéposée là où pam_mymfa l'avait mise (même
+    /// fichier 0600 de /run/user/UID), pour que le démon suivant scelle à sa
+    /// place. Sans cela, créer le coffre après une mise à jour ne le scellerait
+    /// pas avant la connexion suivante.
+    pub fn rendre_cle(&self) {
+        let Some(r) = self.etat().cle_session.take() else { return };
+        let (uid, gid) = unsafe { (libc::geteuid(), libc::getegid()) };
+        match remise::deposer(&self.chemins.execution, uid, gid, remise::FICHIER_CLE, &r.encoder()) {
+            Ok(()) => journal!("clé de session en attente rendue pour le démon suivant"),
+            Err(e) => journal!("clé de session perdue à l'arrêt : {e}"),
+        }
+    }
+
     /// Changement du mot de passe de session (pam_sm_chauthtok) : nouveau sceau.
     pub fn renouveler(&self, r: Renouvellement) {
         let Some(sceau) = lire_sceau(&self.chemins) else { return };
@@ -576,6 +590,26 @@ mod tests {
         deposer_cle(&d, b"session");
         d.surveiller_une_fois().await;
         assert!(!d.verrouille(), "connexion suivante : ouvert sans saisie");
+    }
+
+    /// Redémarrage du démon avant la création : la clé survit.
+    #[tokio::test]
+    async fn cle_rendue_a_l_arret() {
+        let d = demon_vide("rendue");
+        deposer_cle(&d, b"session");
+        d.surveiller_une_fois().await;
+        assert!(d.etat().cle_session.is_some());
+        d.rendre_cle();
+        assert!(d.etat().cle_session.is_none());
+        let suivant = Demon::nouveau(d.chemins.clone());
+        suivant.surveiller_une_fois().await;
+        assert!(suivant.etat().cle_session.is_some(), "clé reprise par le démon suivant");
+        let (record, _) = vault::create(MDP, &Default::default(), RAPIDE).unwrap();
+        suivant
+            .installer_sauvegarde(serde_json::to_string(&record).unwrap(), Zeroizing::new(MDP.into()))
+            .await
+            .unwrap();
+        assert!(suivant.scelle());
     }
 
     #[tokio::test]

@@ -161,10 +161,18 @@ async fn demon() -> Result<(), String> {
     }
     journal!("démon prêt ({})", d.chemins.donnees.display());
     let mut terme = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate()).map_err(|e| e.to_string())?;
-    tokio::select! {
-        _ = terme.recv() => {}
-        _ = tokio::signal::ctrl_c() => {}
-        _ = bus_perdu.notified() => journal!("bus de session perdu"),
+    // Arrêt demandé (mise à jour, redémarrage) : la clé de session en attente
+    // passe au démon suivant. Fin de session : elle part avec la session.
+    let session_finie = tokio::select! {
+        _ = terme.recv() => false,
+        _ = tokio::signal::ctrl_c() => false,
+        _ = bus_perdu.notified() => {
+            journal!("bus de session perdu");
+            true
+        }
+    };
+    if !session_finie {
+        d.rendre_cle();
     }
     d.verrouiller();
     journal!("arrêt");
