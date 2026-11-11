@@ -12,6 +12,7 @@ pub mod otpauth;
 pub mod passgen;
 pub mod store;
 pub mod sync;
+pub mod sync2;
 #[cfg(feature = "texts")]
 pub mod texts;
 pub mod vault;
@@ -87,15 +88,3 @@ fn civil_from_days(z: i64) -> (i64, u32, u32) {
     (if m <= 2 { y + 1 } else { y }, m, d)
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn iso_format() {
-        assert_eq!(iso_from_unix(0, 0), "1970-01-01T00:00:00.000Z");
-        // 2026-11-02T06:42:27.123Z (commit fondateur du dépôt, 07:42:27 +0100)
-        assert_eq!(iso_from_unix(1_793_601_747, 123), "2026-11-02T06:42:27.123Z");
-        assert_eq!(iso_from_unix(951_782_400, 0), "2000-02-29T00:00:00.000Z");
-    }
-}

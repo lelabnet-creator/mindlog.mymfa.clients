@@ -271,13 +271,23 @@ fn has_triple_repeat(text: &str) -> bool {
     chars.windows(3).any(|w| w[0] == w[1] && w[1] == w[2])
 }
 
-/// Comme `Vault.parse` : enregistrement valide ou rien.
+/// Comme `Vault.parse` : enregistrement valide ou rien. Les enveloppes v1
+/// (fusion d'origine) et v2 (synchro v2, SYN-07) se lisent ici — un client plus
+/// ancien exigeait v == 1 et refuse donc d'ouvrir (donc d'écrire) un coffre v2.
 pub fn parse(raw: &str) -> Option<VaultRecord> {
     if raw.is_empty() {
         return None;
     }
     let record: VaultRecord = serde_json::from_str(raw).ok()?;
-    (record.v == 1).then_some(record)
+    (record.v == 1 || record.v == 2).then_some(record)
+}
+
+/// Version d'enveloppe pour des données : v2 dès que les données portent le
+/// marqueur de synchro v2 — les clients d'avant ne liront pas cette enveloppe,
+/// c'est le garde-fou contre un client ancien qui réécrirait des tampons
+/// qu'il ne comprend pas.
+pub fn version_pour(data: &DataMap) -> u32 {
+    if data.contains_key(crate::sync2::SYNC_KEY) { 2 } else { 1 }
 }
 
 pub fn encrypt_data(dek: &Dek, data: &DataMap) -> Result<DataBlob> {
@@ -309,7 +319,10 @@ pub fn create(password: &str, data: &DataMap, iterations: u32) -> Result<(VaultR
     let dek = Dek(random_bytes(32).try_into().expect("32 octets"));
     let entry = password_entry(&dek, password, iterations)?;
     let data_blob = encrypt_data(&dek, data)?;
-    Ok((VaultRecord { v: 1, password: entry, passkeys: Vec::new(), data: data_blob }, dek))
+    Ok((
+        VaultRecord { v: version_pour(data), password: entry, passkeys: Vec::new(), data: data_blob },
+        dek,
+    ))
 }
 
 pub fn unlock_with_password(record: &VaultRecord, password: &str) -> Result<Dek> {
@@ -475,6 +488,13 @@ mod tests {
         assert_eq!(parse("{pas du json"), None);
         assert_eq!(parse(""), None);
         assert_eq!(parse(r#"{"v":2}"#), None);
+        // Une enveloppe v2 complète (sans marqueur dans les données, pour rester
+        // dans le fast path des fixtures) s'ouvre comme une v1.
+        let (record, _) = create("mot de passe maître", &sample_data(), FAST).unwrap();
+        let mut v2 = record.clone();
+        v2.v = 2;
+        let json = serde_json::to_string(&v2).unwrap();
+        assert_eq!(parse(&json), Some(v2));
     }
 
     #[test]
