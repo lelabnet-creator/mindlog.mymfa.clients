@@ -159,7 +159,8 @@
 
   /**
    * client  : { find(), download(fichier), upload(contenu, fichier) } (js/drive.js)
-   * coffre  : { donnees(), dechiffrerAutre(record), remplacerDonnees(map), exporter(), ajouterJournal(entree) }
+   * coffre  : { donnees(), dechiffrerAutre(record), remplacerDonnees(map, avant), exporter(), ajouterJournal(entree) }
+ *           (donnees peut être asynchrone ; remplacerDonnees reçoit aussi la copie lue avant la fusion)
    * temps   : état d'appareil persistant (Sync2.etatPersistant) — { appareil, etat, persister() }
    * maintenant : T() en ms ; source : 'app' | 'extension' (qui conduit le cycle) ;
    * surReponse(fichier) : chaque réponse Drive (heure des serveurs Google, SYN-08).
@@ -183,10 +184,10 @@
             }
           }
 
-          const avant = coffre.donnees();
+          const avant = await coffre.donnees();
           const { donnees, rapport } = Sync2.fusion(avant, distante, temps.etat, maintenant());
           temps.persister();
-          if (Sync2.differentDe(donnees, avant)) await coffre.remplacerDonnees(donnees);
+          if (Sync2.differentDe(donnees, avant)) await coffre.remplacerDonnees(donnees, avant);
 
           let envoye = false;
           let meta = fichier;

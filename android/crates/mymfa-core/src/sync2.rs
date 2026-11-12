@@ -52,9 +52,11 @@ pub const SILENCE_MAX_MS: i64 = 365 * 24 * 60 * 60 * 1000;
 /// pendant la suppression doit avoir le temps de l'apprendre (sinon, à son
 /// réveil, il ferait revivre l'élément supprimé).
 pub const RETENTION_TRACE_MS: i64 = 30 * 24 * 60 * 60 * 1000;
-/// L'activité d'un appareil (`actifLe`) n'est rafraîchie dans le registre que si
-/// autre chose part déjà vers la copie distante, ou si elle date de plus d'un jour :
-/// sinon chaque fusion différerait de Drive et le coffre repartirait à chaque cycle.
+/// L'entrée d'un appareil dans le registre (son activité `actifLe`, son repère `vu`)
+/// n'est republiée que si autre chose part déjà vers la copie distante, ou si son
+/// activité date de plus d'un jour : sinon chaque fusion différerait de Drive et le
+/// coffre repartirait à chaque cycle. Un repère publié en retard ne fait que retarder
+/// l'élagage des traces (prudent, jamais faux). Miroir de js/sync2.js.
 pub const ACTIVITE_PAS_MS: i64 = 24 * 60 * 60 * 1000;
 
 /// `l` de référence : ms UTC sur 13 chiffres (jusqu'en 2286), compteur hexadécimal
@@ -777,14 +779,27 @@ pub fn fusion(locale: &DataMap, distante: &DataMap, etat: &mut EtatSynchro, main
     };
     let precedent = marqueur.appareils[position].1.clone();
     let description = etat.description.clone().or_else(|| precedent.description.clone());
-    let actif_recent =
-        precedent.actif_le > 0 && precedent.actif_le <= maintenant && maintenant - precedent.actif_le < ACTIVITE_PAS_MS;
+    // Récente : à moins d'un jour, dans un sens comme dans l'autre — T() peut reculer quand il
+    // est corrigé par une référence publique (SYN-08) ; l'activité ne doit pas reculer avec lui.
+    let actif_recent = precedent.actif_le > 0 && (maintenant - precedent.actif_le).abs() < ACTIVITE_PAS_MS;
     if actif_recent {
-        marqueur.appareils[position].1 = Vu { tampon: etat.repere.clone(), actif_le: precedent.actif_le, description: description.clone() };
-        ecrire_marqueur(&mut resultat, &marqueur);
-        if !different_de(&resultat, &distante) {
-            rapport.a_envoyer = false;
-            return (resultat, rapport);
+        // D'abord l'entrée telle que la copie distante la porte déjà (rien à republier),
+        // puis le repère frais sans toucher à l'activité.
+        let mut candidats: Vec<Vu> = Vec::new();
+        if let Some((_, publiee)) = lire_marqueur(&distante).appareils.into_iter().find(|(a, _)| a == &etat.appareil) {
+            // Jamais de recul : ni du repère, ni de l'activité la plus récente connue.
+            if publiee.tampon <= etat.repere && publiee.actif_le >= precedent.actif_le {
+                candidats.push(Vu { description: description.clone(), ..publiee });
+            }
+        }
+        candidats.push(Vu { tampon: etat.repere.clone(), actif_le: precedent.actif_le, description: description.clone() });
+        for soi in candidats {
+            marqueur.appareils[position].1 = soi;
+            ecrire_marqueur(&mut resultat, &marqueur);
+            if !different_de(&resultat, &distante) {
+                rapport.a_envoyer = false;
+                return (resultat, rapport);
+            }
         }
     }
     marqueur.appareils[position].1 = Vu { tampon: etat.repere.clone(), actif_le: maintenant, description };

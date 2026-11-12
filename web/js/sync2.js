@@ -57,10 +57,11 @@
    * partout : un appareil nouveau ou hors ligne pendant la suppression doit avoir
    * le temps de l'apprendre. */
   const RETENTION_TRACE_MS = 30 * 24 * 60 * 60 * 1000;
-  /** L'activité d'un appareil (actifLe) n'est rafraîchie dans le registre que si autre
-   * chose part déjà vers la copie distante, ou si elle date de plus d'un jour : sinon
-   * chaque fusion différerait de Drive et le coffre repartirait à chaque cycle. Un jour
-   * suffit largement face au silence d'un an. */
+  /** L'entrée d'un appareil dans le registre (son activité actifLe, son repère vu) n'est
+   * republiée que si autre chose part déjà vers la copie distante, ou si son activité date
+   * de plus d'un jour : sinon chaque fusion différerait de Drive et le coffre repartirait à
+   * chaque cycle. Un jour suffit largement face au silence d'un an ; un repère publié en
+   * retard ne fait que retarder l'élagage des traces (il est prudent, jamais faux). */
   const ACTIVITE_PAS_MS = 24 * 60 * 60 * 1000;
 
   // `l` de référence : ms UTC sur 13 chiffres (jusqu'en 2286), compteur
@@ -868,14 +869,26 @@
     // garde la description reçue.
     const precedent = marqueur.appareils[etat.appareil];
     const description = etat.type ? lireDescription(etat) : lireDescription(precedent);
-    const actifRecent =
-      precedent && precedent.actifLe > 0 && precedent.actifLe <= maintenant && maintenant - precedent.actifLe < ACTIVITE_PAS_MS;
+    // Récente : à moins d'un jour, dans un sens comme dans l'autre — T() peut reculer quand il
+    // est corrigé par une référence publique (SYN-08) ; l'activité ne doit pas reculer avec lui.
+    const actifRecent = precedent && precedent.actifLe > 0 && Math.abs(maintenant - precedent.actifLe) < ACTIVITE_PAS_MS;
     if (actifRecent) {
-      marqueur.appareils[etat.appareil] = { vu: etat.repere, actifLe: precedent.actifLe, ...description };
-      ecrireMarqueur(resultat, marqueur);
-      if (!differentDe(resultat, distant)) {
-        rapport.aEnvoyer = false;
-        return { donnees: resultat, rapport };
+      // D'abord l'entrée telle que la copie distante la porte déjà (rien à republier), puis
+      // le repère frais sans toucher à l'activité.
+      const publiee = lireMarqueur(distant).appareils[etat.appareil];
+      const candidats = [];
+      // Jamais de recul : ni du repère, ni de l'activité la plus récente connue.
+      if (publiee && publiee.vu <= etat.repere && publiee.actifLe >= precedent.actifLe) {
+        candidats.push({ vu: publiee.vu, actifLe: publiee.actifLe, ...description });
+      }
+      candidats.push({ vu: etat.repere, actifLe: precedent.actifLe, ...description });
+      for (const soi of candidats) {
+        marqueur.appareils[etat.appareil] = soi;
+        ecrireMarqueur(resultat, marqueur);
+        if (!differentDe(resultat, distant)) {
+          rapport.aEnvoyer = false;
+          return { donnees: resultat, rapport };
+        }
       }
     }
     marqueur.appareils[etat.appareil] = { vu: etat.repere, actifLe: maintenant, ...description };

@@ -350,6 +350,30 @@ function sync2Cases() {
     });
   }
 
+  // Réception sans rien à renvoyer (SYN-10) : « pc » reçoit un ajout de « tel » le jour
+  // même de sa dernière publication — son repère avance mais rien ne repart vers Drive.
+  {
+    const tel = Sync2.nouvelEtat('tel', T2 - 10 * MINUT_MS, { type: 'android', nom: 'Pixel' });
+    const pc = Sync2.nouvelEtat('pc', T2 - 9 * MINUT_MS, { type: 'web' });
+    const telLocal0 = { 'mymfa.accounts.v1': JSON.stringify([compte2('a1', 'GitHub', '2026-11-11T13:00:00.000Z')]) };
+    const drive0 = Sync2.fusion(telLocal0, {}, tel, T2 - 10 * MINUT_MS).donnees;
+    const pcLocal = Sync2.fusion({}, drive0, pc, T2 - 9 * MINUT_MS).donnees;
+    const drive1 = Sync2.fusion(pcLocal, drive0, pc, T2 - 9 * MINUT_MS).donnees; // pc publié
+    const telLocal = JSON.parse(JSON.stringify(drive1));
+    editer(telLocal, 'a1', 'issuer', 'GitHub Pro', stamp(T2 - 5 * MINUT_MS, 0, 'tel'));
+    const drive2 = Sync2.fusion(telLocal, drive1, tel, T2 - 5 * MINUT_MS).donnees;
+    ajouter(
+      'v2-reception-sans-renvoi-le-jour-meme',
+      drive1,
+      drive2,
+      { horloge: { l: pc.horloge.l, c: 0 }, repere: pc.repere, type: 'web' },
+      (cas) => {
+        if (cas.aEnvoyer) throw new Error('rien ne doit repartir vers Drive le jour même');
+        if (!cas.attendu['mymfa.accounts.v1'].includes('GitHub Pro')) throw new Error('la modification de tel doit arriver');
+      }
+    );
+  }
+
   return { maintenant, cases };
 }
 

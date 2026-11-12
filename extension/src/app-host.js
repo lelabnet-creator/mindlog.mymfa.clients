@@ -14,7 +14,11 @@
 (function () {
   'use strict';
 
-  const PAGE_KEYS = ['mymfa.vault.v1', 'mymfa.accounts.v1', 'mymfa.history.v1', 'mymfa.deleted.v1', 'mymfa.logins.v1', 'mymfa.passkeys.v1'];
+  // Mêmes clés que le service (DATA_KEYS) : réglages et marqueur de synchro v2 compris.
+  const PAGE_KEYS = [
+    'mymfa.vault.v1', 'mymfa.accounts.v1', 'mymfa.history.v1', 'mymfa.deleted.v1', 'mymfa.logins.v1',
+    'mymfa.passkeys.v1', 'mymfa.settings.v1', 'mymfa.sync.v2',
+  ];
   const AUTOLOCK_KEY = 'mymfa.autoLock';
   const TOUCH_EVERY = 30000; // activité signalée au plus une fois par période
 
@@ -106,6 +110,8 @@
     driveEvery: (hours) => send({ type: 'app:driveEvery', hours }),
     driveBackedUp: () => send({ type: 'app:driveBackedUp' }).catch(() => null),
     driveInfo: () => send({ type: 'app:driveInfo' }),
+    driveSync: () => send({ type: 'app:driveSync' }), // { entree, next }
+    syncJournal: () => send({ type: 'app:syncJournal' }),
   };
 
   chrome.runtime.onMessage.addListener((message) => {

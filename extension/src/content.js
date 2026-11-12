@@ -21,7 +21,11 @@
 
   /* ═════════════ Pont avec l'app ═════════════ */
 
-  const PAGE_KEYS = ['mymfa.vault.v1', 'mymfa.accounts.v1', 'mymfa.history.v1', 'mymfa.deleted.v1', 'mymfa.logins.v1', 'mymfa.passkeys.v1'];
+  // Mêmes clés que le service (DATA_KEYS) : réglages et marqueur de synchro v2 compris.
+  const PAGE_KEYS = [
+    'mymfa.vault.v1', 'mymfa.accounts.v1', 'mymfa.history.v1', 'mymfa.deleted.v1', 'mymfa.logins.v1',
+    'mymfa.passkeys.v1', 'mymfa.settings.v1', 'mymfa.sync.v2',
+  ];
 
   function setupBridge() {
     const isApp = document.querySelector('meta[name="application-name"][content="myMFA"]');

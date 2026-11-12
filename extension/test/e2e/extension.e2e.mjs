@@ -233,20 +233,26 @@ try {
   });
 
   /* Google Drive simulé : la sauvegarde vit côté test, l'échange réel (driveExchange) tourne dans le service. */
+  // Faux client Drive (forme de js/drive.js) : une version fixe tant que personne n'écrit.
+  // Réponse résumée à ce que le popup lit : { changed, uploaded } ou { needsUnlock }.
   const driveExchange = (content) =>
     worker.evaluate(async (content) => {
       let uploaded = null;
+      const fichier = content ? { id: 'f1', modifiedTime: new Date().toISOString(), headRevisionId: 'r1' } : null;
       const client = {
+        async find() {
+          return fichier;
+        },
         async download() {
-          if (!content) throw Object.assign(new Error('driveEmpty'), { code: 'driveEmpty' });
-          return { content, modifiedTime: new Date().toISOString() };
+          return { content, modifiedTime: fichier.modifiedTime };
         },
         async upload(body) {
           uploaded = body;
-          return {};
+          return { id: 'f1', modifiedTime: new Date().toISOString() };
         },
       };
-      return { res: await driveExchange(client), uploaded };
+      const res = await driveExchange(client);
+      return { res: res.needsUnlock ? { needsUnlock: true } : { changed: res.changed, uploaded: res.uploaded }, uploaded };
     }, content);
   // Sauvegarde d'un « autre appareil » : le coffre de l'extension, plus un compte.
   const forgeBackup = (uri) =>
@@ -260,14 +266,15 @@ try {
   const backupIssuers = (content) =>
     worker.evaluate(async (content) => {
       const map = await Vault.decryptData(await getDek(), Vault.parse(content).data);
-      return JSON.parse(map[Store.ACCOUNTS_KEY]).map((a) => a.issuer).sort();
+      // Comptes vivants : un compte supprimé (v2) reste dans la copie avec sa trace.
+      return JSON.parse(map[Store.ACCOUNTS_KEY]).filter((a) => Sync2.estVivant(a)).map((a) => a.issuer).sort();
     }, content);
 
   let backup = null;
 
   await step('Drive vide : l’extension y dépose son coffre chiffré', async () => {
     const { res, uploaded } = await driveExchange(null);
-    assert.deepEqual(res, { uploaded: true });
+    assert.deepEqual(res, { changed: false, uploaded: true });
     assert.ok(uploaded && !uploaded.includes('Proton'), 'coffre chiffré attendu');
     assert.deepEqual(await backupIssuers(uploaded), ['Proton']);
     backup = uploaded;

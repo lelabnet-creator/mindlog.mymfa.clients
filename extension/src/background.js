@@ -10,14 +10,23 @@
  *    l'origine configurée (réglage « Adresse de l'app »).
  *  - Synchronisation par la sauvegarde Google Drive de l'app (même fichier chiffré,
  *    dossier caché appDataFolder) : récupérée, fusionnée, renvoyée si elle a changé.
+ *  - Synchro v2 (EXT-12) : toutes les fusions (app ↔ extension, Drive) passent par
+ *    Sync2.fusion, les écritures du service sont tamponnées (horloge hybride de cet
+ *    appareil, persistée dans chrome.storage.local) ; le marqueur v2 voyage avec les
+ *    données ; les éléments supprimés (gardés avec leur trace) ne sont jamais servis.
  *  - Mots de passe et passkeys des sites, uniquement dans un coffre chiffré. Un script de
  *    contenu n'obtient que ce qui concerne le site de son onglet (origine donnée par Chrome),
  *    et un mot de passe seulement au moment de le remplir.
  */
-importScripts('lib/jsQR.js', 'lib/otp.js', 'lib/store.js', 'lib/vault.js', 'lib/sync.js', 'lib/config.js', 'lib/drive.js', 'lib/webauthn.js');
+importScripts(
+  'lib/jsQR.js', 'lib/otp.js', 'lib/store.js', 'lib/vault.js', 'lib/sync.js', 'lib/sync2.js', 'lib/heure.js',
+  'lib/config.js', 'lib/drive.js', 'lib/drivesync.js', 'lib/webauthn.js'
+);
 
 const VAULT_KEY = Vault.VAULT_KEY;
-const PAGE_KEYS = [VAULT_KEY, ...Sync.KEYS];
+// Clés de données échangées avec l'app : v1 historiques, plus le marqueur v2 (registre des appareils).
+const DATA_KEYS = [...Sync.KEYS, Sync2.SYNC_KEY];
+const PAGE_KEYS = [VAULT_KEY, ...DATA_KEYS];
 const K = {
   snapshot: 'ext.snapshot',
   settings: 'ext.settings',
@@ -33,6 +42,8 @@ const K = {
   pending: 'ext.pending', // session : données à fusionner au prochain déverrouillage
   driveToken: 'ext.driveToken', // session
   captures: 'ext.captures', // session : mots de passe saisis, par onglet, en attente de « Enregistrer »
+  temps: 'ext.temps', // identifiant d'appareil, horloge hybride, repère, décalage d'heure (jamais synchronisés)
+  syncJournal: 'ext.syncJournal', // journal des synchros Drive, chiffré par la clé du coffre
 };
 const CAPTURE_TTL = 5 * 60000;
 const AUTOLOCK_CHOICES = [1, 5, 15, 60, 0]; // minutes ; 0 = jamais (mêmes choix que l'app et le popup)
@@ -101,6 +112,73 @@ async function setDek(key) {
   raw.fill(0);
 }
 
+/* ───────────── Synchro v2 : état de cet appareil ─────────────
+ * Le service n'a pas de Web Storage : l'état d'appareil de Sync2.etatPersistant vit dans un
+ * cache mémoire recopié dans chrome.storage.local à chaque écriture, rechargé au réveil. */
+
+function pick(map) {
+  const out = {};
+  for (const key of DATA_KEYS) if (map && map[key] != null) out[key] = map[key];
+  return out;
+}
+
+function descriptionExtension() {
+  const ua = (self.navigator && navigator.userAgent) || '';
+  const navigateur = /Edg\//.test(ua) ? 'Edge' : /OPR\//.test(ua) ? 'Opera' : /Chrome\//.test(ua) ? 'Chrome' : '';
+  const systeme = /Android/.test(ua) ? 'Android' : /Mac OS X/.test(ua) ? 'macOS' : /Windows/.test(ua) ? 'Windows'
+    : /Linux|X11|CrOS/.test(ua) ? 'Linux' : '';
+  const nom = [navigateur, systeme].filter(Boolean).join(' · ');
+  return { type: 'extension', ...(nom ? { nom } : {}) };
+}
+
+let tempsPret = null;
+function chargerTemps() {
+  if (!tempsPret) {
+    tempsPret = chrome.storage.local.get(K.temps).then(({ [K.temps]: sauve }) => {
+      const cache = new Map(Object.entries((sauve && sauve.cles) || {}));
+      const decalage = sauve && Number.isFinite(sauve.decalageMs) ? sauve.decalageMs : null;
+      const horloge = Heure.create({ decalageInitial: decalage });
+      const heure = { horloge, decalage };
+      const ecrire = () => chrome.storage.local.set({ [K.temps]: { cles: Object.fromEntries(cache), decalageMs: heure.decalage } }).catch(() => {});
+      const shim = {
+        getItem: (k) => (cache.has(k) ? cache.get(k) : null),
+        setItem: (k, v) => {
+          cache.set(k, String(v));
+          ecrire();
+        },
+        removeItem: (k) => {
+          cache.delete(k);
+          ecrire();
+        },
+      };
+      const temps = Sync2.etatPersistant(shim, () => horloge.maintenant(), descriptionExtension());
+      return {
+        temps,
+        maintenant: () => horloge.maintenant(),
+        /** Heure des serveurs Google d'une réponse Drive (SYN-08) : corrige T(), conservée. */
+        noterHeure(fichier) {
+          const ms = Heure.heureDrive(fichier);
+          if (ms === null) return;
+          heure.decalage = horloge.recevoirReference(ms).decalageMs;
+          ecrire();
+        },
+      };
+    });
+  }
+  return tempsPret;
+}
+
+/** Fusion v2 de deux copies locales (app, en attente, Drive) : l'état de l'appareil avance. */
+async function fusionner(a, b) {
+  const { temps, maintenant } = await chargerTemps();
+  const { donnees } = Sync2.fusion(a || {}, b || {}, temps.etat, maintenant());
+  temps.persister();
+  return donnees;
+}
+
+/** Même contenu (JSON parsé), clés de données seulement. */
+const memesDonnees = (a, b) => !Sync2.differentDe(pick(a), pick(b));
+
 /** Une opération à la fois sur les données : lecture, fusion, écriture. */
 let chain = Promise.resolve();
 function serial(task) {
@@ -117,14 +195,18 @@ function serial(task) {
 async function readData({ touch = true } = {}) {
   const snap = await getSnapshot();
   const record = Vault.parse(snap[VAULT_KEY]);
+  const { temps } = await chargerTemps();
+  // Copie v1 (ancienne extension, app d'avant) : migrée à la lecture — rejouable sans effet.
+  const migree = (map) => (map[Sync2.SYNC_KEY] ? map : Sync2.migrer(map, 0, temps.appareil));
   if (!record) {
-    const map = Sync.pick(snap);
+    const brut = pick(snap);
+    const map = Object.keys(brut).length ? migree(brut) : brut;
     return { status: Object.keys(map).length ? 'plain' : 'empty', map, record: null, dek: null };
   }
   const dek = await getDek();
   if (!dek) return { status: 'locked', record };
   try {
-    const map = await Vault.decryptData(dek, record.data);
+    const map = migree(await Vault.decryptData(dek, record.data));
     if (touch) await chrome.storage.session.set({ [K.lastUse]: Date.now() });
     return { status: 'unlocked', map, record, dek };
   } catch {
@@ -136,9 +218,11 @@ async function readData({ touch = true } = {}) {
 async function writeData(map, ctx) {
   const snap = {};
   if (ctx.record) {
-    snap[VAULT_KEY] = JSON.stringify({ ...ctx.record, data: await Vault.encryptData(ctx.dek, map) });
+    // Enveloppe v2 dès que les données portent le marqueur : un client d'avant refuse d'écrire.
+    const v = map[Sync2.SYNC_KEY] ? 2 : ctx.record.v;
+    snap[VAULT_KEY] = JSON.stringify({ ...ctx.record, v, data: await Vault.encryptData(ctx.dek, map) });
   } else {
-    Object.assign(snap, Sync.pick(map));
+    Object.assign(snap, pick(map));
   }
   await chrome.storage.local.set({ [K.snapshot]: snap });
   await updateSiteIndex(map);
@@ -161,7 +245,7 @@ function mapStorage(map) {
 async function applyPending(ctx) {
   const { [K.pending]: pending } = await chrome.storage.session.get(K.pending);
   if (!pending || ctx.status === 'locked') return ctx;
-  const map = Sync.merge(ctx.map || {}, pending);
+  const map = await fusionner(ctx.map || {}, pending);
   await writeData(map, ctx);
   await chrome.storage.session.remove(K.pending);
   await chrome.storage.local.set({ [K.dirty]: true });
@@ -179,7 +263,8 @@ function mutate(fn, { secure = false } = {}) {
     if (secure && !ctx.record) throw new ExtError('credentialsNeedVault');
     ctx = await applyPending(ctx);
     const storage = mapStorage({ ...(ctx.map || {}) });
-    const result = fn(Store.createStore(storage));
+    const { temps } = await chargerTemps();
+    const result = fn(Store.createStore(storage, temps)); // écritures tamponnées (v2)
     await writeData(storage.map, ctx);
     await chrome.storage.local.set({ [K.dirty]: true });
     pushToApp();
@@ -188,13 +273,10 @@ function mutate(fn, { secure = false } = {}) {
   });
 }
 
+/** Comptes vivants : un élément supprimé reste dans la copie (avec sa trace) pour propager
+ *  la suppression, mais n'est jamais servi. */
 function accountsOf(map) {
-  try {
-    const list = JSON.parse((map || {})[Store.ACCOUNTS_KEY] || '[]');
-    return Array.isArray(list) ? list : [];
-  } catch {
-    return [];
-  }
+  return listOf(map, Store.ACCOUNTS_KEY);
 }
 
 /* ───────────── Codes ───────────── */
@@ -321,7 +403,7 @@ async function pushToApp() {
 }
 
 async function stashPending(map) {
-  if (map && Object.keys(Sync.pick(map)).length) await chrome.storage.session.set({ [K.pending]: Sync.pick(map) });
+  if (map && Object.keys(pick(map)).length) await chrome.storage.session.set({ [K.pending]: pick(map) });
 }
 
 /**
@@ -341,13 +423,13 @@ async function reconcile(page, dirty) {
   const finish = (snap, writeBack) => ({ snap, writeBack });
 
   if (!pageRecord && !extRecord) {
-    const merged = Sync.merge(Sync.pick(page), Sync.pick(ext));
-    return finish(merged, !Sync.same(merged, Sync.pick(page)));
+    const merged = await fusionner(pick(page), pick(ext));
+    return finish(merged, !memesDonnees(merged, page));
   }
 
   if (pageRecord && !extRecord) {
     // L'app vient d'être chiffrée : on adopte son coffre ; nos ajouts attendent le déverrouillage.
-    if (dirty) await stashPending(Sync.pick(ext));
+    if (dirty) await stashPending(pick(ext));
     await setDek(null);
     return finish({ [VAULT_KEY]: page[VAULT_KEY] }, false);
   }
@@ -359,22 +441,22 @@ async function reconcile(page, dirty) {
     const { [K.vaultLocal]: vaultLocal } = await chrome.storage.local.get(K.vaultLocal);
     if (dek) {
       try {
-        const merged = Sync.merge(Sync.pick(page), await Vault.decryptData(dek, extRecord.data));
+        const merged = await fusionner(pick(page), await Vault.decryptData(dek, extRecord.data));
         if (vaultLocal || Sync.hasCredentials(merged)) {
           // Jamais de retour au clair avec des mots de passe ou des passkeys : l'app reçoit le coffre,
           // ses données en clair y sont fusionnées.
-          const record = { ...extRecord, data: await Vault.encryptData(dek, merged) };
+          const record = { ...extRecord, v: 2, data: await Vault.encryptData(dek, merged) };
           return finish({ [VAULT_KEY]: JSON.stringify(record) }, true);
         }
         await setDek(null);
-        return finish(merged, !Sync.same(merged, Sync.pick(page)));
+        return finish(merged, !memesDonnees(merged, page));
       } catch {
         /* clé périmée : traité comme verrouillé */
       }
     }
     if (dirty || vaultLocal) return { needsUnlock: true };
     await setDek(null);
-    return finish(Sync.pick(page), false);
+    return finish(pick(page), false);
   }
 
   // Les deux côtés chiffrés.
@@ -387,10 +469,10 @@ async function reconcile(page, dirty) {
       } catch {
         /* copie locale illisible : seule celle de l'app compte */
       }
-      const merged = Sync.merge(pageMap, extMap);
-      if (Sync.same(merged, Sync.pick(pageMap))) return finish({ [VAULT_KEY]: page[VAULT_KEY] }, false);
+      const merged = await fusionner(pageMap, extMap);
+      if (memesDonnees(merged, pageMap)) return finish({ [VAULT_KEY]: page[VAULT_KEY] }, false);
       // Enveloppes de l'app (mot de passe, passkeys à jour), données fusionnées.
-      const record = { ...pageRecord, data: await Vault.encryptData(dek, merged) };
+      const record = { ...pageRecord, v: 2, data: await Vault.encryptData(dek, merged) };
       return finish({ [VAULT_KEY]: JSON.stringify(record) }, true);
     } catch {
       // Nouvelle clé de coffre dans l'app (chiffrement réactivé) : on adopte, nos ajouts en attente.
@@ -415,7 +497,7 @@ async function dataChanged(before, after) {
   const dek = a && b ? await getDek() : null;
   if (!dek) return true;
   try {
-    return !Sync.same(await Vault.decryptData(dek, a.data), await Vault.decryptData(dek, b.data));
+    return !memesDonnees(await Vault.decryptData(dek, a.data), await Vault.decryptData(dek, b.data));
   } catch {
     return true;
   }
@@ -481,42 +563,93 @@ async function driveToken(interactive, requestedClientId) {
   return token;
 }
 
+/* Journal des synchros Drive de l'extension : même forme et même AAD que celui de l'app
+ * (js/lock.js), chiffré par la clé du coffre, jamais synchronisé, 200 cycles. */
+const AAD_JOURNAL = 'mymfa:sync:journal:v1';
+const JOURNAL_MAX = 200;
+
+async function lireJournal() {
+  const dek = await getDek();
+  if (!dek) return [];
+  const { [K.syncJournal]: enveloppe } = await chrome.storage.local.get(K.syncJournal);
+  if (!enveloppe || !enveloppe.data) return [];
+  try {
+    const contenu = await Vault.decryptJson(dek, enveloppe.data, AAD_JOURNAL);
+    return Array.isArray(contenu.entrees) ? contenu.entrees : [];
+  } catch {
+    return []; // autre coffre : journal illisible, repart de zéro
+  }
+}
+
+async function ajouterJournal(entree) {
+  const dek = await getDek();
+  if (!dek) return;
+  const entrees = [entree, ...(await lireJournal())].slice(0, JOURNAL_MAX);
+  await chrome.storage.local.set({ [K.syncJournal]: { v: 1, data: await Vault.encryptJson(dek, { entrees }, AAD_JOURNAL) } });
+}
+
+const totalChangements = (t) => (t ? t.ajout + t.modification + t.suppression : 0);
+
 /**
- * Récupère la sauvegarde Drive, la fusionne comme une copie de l'app, et renvoie le
- * résultat sur Drive s'il apporte quelque chose. Seul un coffre chiffré va sur Drive :
- * Drive vide et extension en clair → driveEmpty.
+ * Synchro avec la copie Drive. Coffre ouvert : le cycle v2 commun (js/drivesync.js) —
+ * lecture, fusion champ par champ, revérification de la version, envoi, journal.
+ * Verrouillé : rien (needsUnlock). Extension en clair : la copie Drive (toujours chiffrée)
+ * est adoptée comme le coffre de l'app, nos ajouts attendent le déverrouillage ; Drive vide
+ * et extension en clair → driveEmpty (jamais de clair sur Drive).
  */
 async function driveExchange(client) {
-  let backup = null;
-  try {
-    backup = await client.download();
-  } catch (err) {
-    if (err.code !== 'driveEmpty') throw err;
-  }
-  if (!backup) {
-    const vault = (await getSnapshot())[VAULT_KEY];
-    if (!Vault.parse(vault)) throw new ExtError('driveEmpty');
-    return { uploaded: true, file: await client.upload(vault) };
-  }
-  if (!Vault.parse(backup.content)) throw new ExtError('invalidBackup');
+  const ctx = await serial(() => readData({ touch: false }));
+  if (ctx.status === 'locked') return { needsUnlock: true };
 
+  if (ctx.status === 'unlocked') {
+    const { temps, maintenant, noterHeure } = await chargerTemps();
+    const coffre = {
+      donnees: async () => {
+        const c = await serial(() => readData({ touch: false }));
+        if (c.status !== 'unlocked') throw new ExtError('locked');
+        return c.map;
+      },
+      dechiffrerAutre: async (record) => {
+        const dek = await getDek();
+        if (!dek) throw new ExtError('locked');
+        return Vault.decryptData(dek, record.data);
+      },
+      remplacerDonnees: (map, avant) =>
+        serial(async () => {
+          const c = await readData({ touch: false });
+          if (c.status !== 'unlocked') throw new ExtError('locked');
+          // Écriture locale faite pendant l'échange avec Drive : refusionnée, rien de perdu.
+          const final = avant && !memesDonnees(c.map, avant) ? await fusionner(c.map, map) : map;
+          await writeData(final, c);
+          await chrome.storage.local.set({ [K.dirty]: true });
+        }),
+      exporter: async () => (await getSnapshot())[VAULT_KEY],
+      ajouterJournal,
+    };
+    const entree = await DriveSync.creer({ client, coffre, temps, maintenant, source: 'extension', surReponse: noterHeure }).cycle();
+    const recus = totalChangements(entree.totaux && entree.totaux.recus);
+    if (recus) {
+      pushToApp();
+      refreshIndex();
+    }
+    return { ...entree, changed: recus > 0, uploaded: entree.resultat === 'envoye' || entree.resultat === 'premier' };
+  }
+
+  // Extension sans coffre : adopter celui de Drive (comme celui de l'app).
+  const fichier = await client.find();
+  if (!fichier) throw new ExtError('driveEmpty');
+  const backup = await client.download(fichier);
+  if (!Vault.parse(backup.content)) throw new ExtError('invalidBackup');
   const res = await serial(async () => {
-    const before = await getSnapshot();
-    // Drive peut être en retard sur nous (l'app ne sauvegarde qu'à la demande) : toujours « dirty ».
     const merged = await reconcile({ [VAULT_KEY]: backup.content }, true);
     if (merged.needsUnlock) return merged;
-    const changed = await dataChanged(before, merged.snap);
-    // Ce que Drive nous apporte, l'app ne l'a peut-être pas encore.
-    await chrome.storage.local.set({ [K.snapshot]: merged.snap, ...(changed ? { [K.dirty]: true } : {}) });
-    return { changed, upload: merged.writeBack ? merged.snap[VAULT_KEY] : null };
+    await chrome.storage.local.set({ [K.snapshot]: merged.snap, [K.dirty]: true });
+    return { changed: true };
   });
   if (res.needsUnlock) return res;
-  const file = res.upload ? await client.upload(res.upload) : backup.file;
-  if (res.changed) {
-    pushToApp();
-    refreshIndex();
-  }
-  return { changed: res.changed, uploaded: Boolean(res.upload), file };
+  pushToApp();
+  refreshIndex();
+  return { changed: true, uploaded: false, fichier };
 }
 
 let driveRun = null;
@@ -530,11 +663,12 @@ function syncDrive(interactive) {
 async function runDriveSync(interactive) {
   const client = Drive.createClient({ fetch: (...args) => fetch(...args), getToken: () => driveToken(interactive) });
   try {
-    const { file, ...res } = await driveExchange(client);
+    const res = await driveExchange(client);
+    const fichier = res.fichier || null;
     await chrome.storage.local.set(
       res.needsUnlock
         ? { [K.driveError]: 'locked' }
-        : { [K.driveError]: null, [K.driveLastSync]: new Date().toISOString(), ...(file ? { [K.driveFile]: file } : {}) }
+        : { [K.driveError]: null, [K.driveLastSync]: new Date().toISOString(), ...(fichier ? { [K.driveFile]: fichier } : {}) }
     );
     if (interactive) await saveSettings({ drive: true });
     return res;
@@ -578,7 +712,7 @@ async function disconnectDrive() {
 function listOf(map, key) {
   try {
     const list = JSON.parse((map || {})[key] || '[]');
-    return Array.isArray(list) ? list : [];
+    return Array.isArray(list) ? list.filter((item) => item && Sync2.estVivant(item)) : [];
   } catch {
     return [];
   }
@@ -795,7 +929,8 @@ async function createVault(password) {
   await serial(async () => {
     const ctx = await readData();
     if (ctx.record) throw new ExtError('alreadyEncrypted');
-    const { record, dek } = await Vault.create(password, Sync.pick(ctx.map || {}));
+    // Données migrées (readData) : marqueur v2 présent, enveloppe v2.
+    const { record, dek } = await Vault.create(password, pick(ctx.map || {}));
     await chrome.storage.local.set({ [K.snapshot]: { [VAULT_KEY]: JSON.stringify(record) }, [K.vaultLocal]: true, [K.dirty]: true });
     await setDek(dek);
   });
@@ -1161,6 +1296,10 @@ const handlers = {
     return {};
   },
   'app:driveToken': async ({ clientId }) => ({ token: await driveToken(true, clientId) }),
+  // Synchro demandée par l'app embarquée : l'arrière-plan est le seul écrivain Drive de l'extension.
+  'app:driveSync': async () => ({ entree: await syncDrive(true), next: await nextDriveBackup() }),
+  // Journal des synchros conduites par l'arrière-plan, pour l'espace Synchro de l'app.
+  'app:syncJournal': async () => ({ entrees: await lireJournal(), appareil: (await chargerTemps()).temps.appareil }),
   // Métadonnées du fichier de sauvegarde relues sur Drive, sans fenêtre Google (jeton silencieux).
   'app:driveInfo': async () => {
     const client = Drive.createClient({ fetch: (...args) => fetch(...args), getToken: () => driveToken(false) });

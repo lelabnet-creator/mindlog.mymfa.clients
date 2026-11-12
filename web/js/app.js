@@ -1299,8 +1299,10 @@
       if (Lock.status() !== 'unlocked') throw Object.assign(new Error('locked'), { code: 'locked' });
       let entree;
       if (HOST && HOST.driveSync) {
-        entree = await HOST.driveSync();
+        const res = await HOST.driveSync();
+        entree = res.entree;
         if (entree && entree.fichier) rememberDriveFile(entree.fichier);
+        if (hostDrive) hostDrive.next = res.next; // la synchro compte pour sa politique automatique
       } else {
         entree = await DriveSync.creer({
           client: drive(),

@@ -498,3 +498,25 @@ test("rien de nouveau : l'activité n'est pas réécrite avant un jour, rien à 
   assert.strictEqual(lendemain.rapport.aEnvoyer, true, 'un jour après : activité rafraîchie');
   assert.strictEqual(registre(lendemain.donnees).pc.actifLe, T0 + Sync2.ACTIVITE_PAS_MS);
 });
+
+test("réception sans rien à renvoyer : le repère n'est pas republié le jour même", () => {
+  const tel = Sync2.nouvelEtat('tel', T0, { type: 'android' });
+  const pc = Sync2.nouvelEtat('pc', T0, { type: 'web' });
+  // pc publie un compte, tel le reçoit et publie son entrée.
+  let drive = Sync2.fusion(copie([compte('a', 'GitHub', '2026-11-11T14:00:00.000Z')]), {}, pc, T0).donnees;
+  drive = Sync2.fusion({}, drive, tel, T0 + MINUT).donnees;
+  const telLocal = { ...drive };
+  // pc ajoute un compte et le publie.
+  const pcLocal = Sync2.fusion(drive, drive, pc, T0 + 2 * MINUT).donnees;
+  const champs = Sync2.COLLECTIONS[0].champs;
+  const items = JSON.parse(pcLocal[Store.ACCOUNTS_KEY]);
+  items.push({ ...compte('b', 'GitLab', '2026-11-11T14:10:00.000Z'), h: Object.fromEntries(champs.map((c) => [c, Sync2.encoderTampon(T0 + 3 * MINUT, 0, 'pc')])) });
+  drive = Sync2.fusion({ ...pcLocal, [Store.ACCOUNTS_KEY]: JSON.stringify(items) }, drive, pc, T0 + 3 * MINUT).donnees;
+  // tel reçoit GitLab : son repère avance, mais il n'a rien d'autre à publier.
+  const recu = Sync2.fusion(telLocal, drive, tel, T0 + 4 * MINUT);
+  assert.deepStrictEqual(ids(recu.donnees).sort(), ['a', 'b']);
+  assert.strictEqual(recu.rapport.aEnvoyer, false, 'rien à renvoyer le jour même');
+  const lendemain = Sync2.fusion(recu.donnees, drive, tel, T0 + MINUT + Sync2.ACTIVITE_PAS_MS);
+  assert.strictEqual(lendemain.rapport.aEnvoyer, true, 'le lendemain, repère et activité publiés');
+  assert.ok(registre(lendemain.donnees).tel.vu > registre(drive).tel.vu);
+});
