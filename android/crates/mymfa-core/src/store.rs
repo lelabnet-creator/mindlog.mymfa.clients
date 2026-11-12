@@ -20,6 +20,45 @@ pub const PASSKEYS_KEY: &str = "mymfa.passkeys.v1";
 pub const SETTINGS_KEY: &str = "mymfa.settings.v1";
 pub const HISTORY_MAX: usize = 500;
 
+/* ───── Synchro v2 (SYN-07) ─────
+ * Avec une horloge (`Store.temps`), chaque modification tamponne ses champs au
+ * format v2 (`h`, `t`) — celui que fusionne sync2.rs, comme web/js/store.js avec
+ * `temps`. Sans horloge, la forme v1 historique (updatedAt seul, suppressions
+ * dans mymfa.deleted.v1). Dans les deux cas, les tampons et champs inconnus sont
+ * gardés, et seuls les éléments vivants sont servis. */
+
+/// Tampons des champs d'un élément : { champ → tampon }.
+pub type Tampons = std::collections::BTreeMap<String, String>;
+
+const CHAMPS_COMPTE: [&str; 11] = ["type", "issuer", "account", "secret", "algorithm", "digits", "period", "counter", "tag", "description", "favorite"];
+const CHAMPS_LOGIN: [&str; 8] = ["origin", "username", "password", "title", "note", "tag", "source", "favorite"];
+const CHAMPS_PASSKEY: [&str; 9] = ["credentialId", "rpId", "rpName", "origin", "userHandle", "userName", "userDisplayName", "algorithm", "privateKey"];
+
+/// Horloge de l'appareil qui écrit : identifiant, horloge hybride, et T() (ms)
+/// au moment de l'écriture. L'appelant reprend `horloge` après coup (elle avance).
+#[derive(Debug, Clone)]
+pub struct TempsStore {
+    pub horloge: crate::sync2::Horloge,
+    pub appareil: String,
+    pub maintenant: i64,
+}
+
+fn sommet(h: &Option<Tampons>) -> Option<&str> {
+    h.as_ref().and_then(|h| h.values().map(String::as_str).max())
+}
+
+/// Un élément vit si le plus grand tampon de ses champs dépasse sa trace.
+fn vivant(h: &Option<Tampons>, t: &Option<String>) -> bool {
+    match t {
+        None => true,
+        Some(trace) => sommet(h).is_some_and(|s| s > trace.as_str()),
+    }
+}
+
+fn tampons_de(champs: &[&str], tampon: &str) -> Tampons {
+    champs.iter().map(|c| (c.to_string(), tampon.to_string())).collect()
+}
+
 /* ───── Modèle ───── */
 
 #[allow(non_snake_case)] // champs camelCase : noms JSON du web
@@ -40,8 +79,16 @@ pub struct Account {
     pub favorite: bool,
     pub createdAt: String,
     pub updatedAt: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub usedAt: Option<String>,
+    /// Synchro v2 : tampon de chaque champ (SYN-07), trace de suppression.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub h: Option<Tampons>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub t: Option<String>,
+    /// Champs inconnus de ce client, gardés tels quels à la réécriture.
+    #[serde(flatten)]
+    pub extra: serde_json::Map<String, Value>,
 }
 
 /// Mot de passe d'un site (web : « logins », `mymfa.logins.v1`). Jamais hors coffre.
@@ -66,6 +113,14 @@ pub struct Login {
     pub favorite: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub usedAt: Option<String>,
+    /// Synchro v2 : tampon de chaque champ (SYN-07), trace de suppression.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub h: Option<Tampons>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub t: Option<String>,
+    /// Champs inconnus de ce client, gardés tels quels à la réécriture.
+    #[serde(flatten)]
+    pub extra: serde_json::Map<String, Value>,
 }
 
 /// Passkey d'un site (myMFA fournisseur, `mymfa.passkeys.v1`) — pas celle qui
@@ -93,6 +148,14 @@ pub struct SitePasskey {
     pub updatedAt: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub usedAt: Option<String>,
+    /// Synchro v2 : tampon de chaque champ (SYN-07), trace de suppression.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub h: Option<Tampons>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub t: Option<String>,
+    /// Champs inconnus de ce client, gardés tels quels à la réécriture.
+    #[serde(flatten)]
+    pub extra: serde_json::Map<String, Value>,
 }
 
 fn default_passkey_algorithm() -> i32 {
@@ -388,6 +451,8 @@ pub struct Store {
     pub data: DataMap,
     /// Identifiant de l'appareil qui écrit (SYN-09), noté dans l'historique.
     pub appareil: Option<String>,
+    /// Horloge pour tamponner les écritures (synchro v2) ; None : forme v1.
+    pub temps: Option<TempsStore>,
 }
 
 /// Objet libellé du journal (web : l'argument `account` de `log`, tel que le
@@ -424,7 +489,7 @@ impl Store {
     }
 
     pub fn from_map(data: DataMap) -> Self {
-        Self { data, appareil: None }
+        Self { data, appareil: None, temps: None }
     }
 
     fn read_array<T: serde::de::DeserializeOwned>(&self, key: &str) -> Vec<T> {
@@ -436,6 +501,25 @@ impl Store {
 
     fn write<T: Serialize>(&mut self, key: &str, value: &T) {
         self.data.insert(key.to_string(), serde_json::to_string(value).expect("sérialisation interne"));
+    }
+
+    /// Un tampon pour une modification locale (plus grand que le plancher), si le
+    /// Store a une horloge.
+    fn tampon(&mut self, plancher: Option<&str>) -> Option<String> {
+        let t = self.temps.as_mut()?;
+        Some(t.horloge.apres(t.maintenant, plancher, &t.appareil))
+    }
+
+    fn comptes_bruts(&self) -> Vec<Account> {
+        self.read_array(ACCOUNTS_KEY)
+    }
+
+    fn logins_bruts(&self) -> Vec<Login> {
+        self.read_array(LOGINS_KEY)
+    }
+
+    fn passkeys_bruts(&self) -> Vec<SitePasskey> {
+        self.read_array(PASSKEYS_KEY)
     }
 
     fn read_deleted(&self) -> Deleted {
@@ -469,8 +553,9 @@ impl Store {
 
     /* ───── Comptes ───── */
 
+    /// Comptes vivants (un compte supprimé en v2 reste dans la copie avec sa trace).
     pub fn list(&self) -> Vec<Account> {
-        self.read_array(ACCOUNTS_KEY)
+        self.comptes_bruts().into_iter().filter(|a| vivant(&a.h, &a.t)).collect()
     }
 
     pub fn get(&self, id: &str) -> Option<Account> {
@@ -501,8 +586,16 @@ impl Store {
             createdAt: now.clone(),
             updatedAt: now,
             usedAt: None,
+            h: None,
+            t: None,
+            extra: serde_json::Map::new(),
         };
-        let mut accounts = self.list();
+        let mut account = account;
+        if let Some(tampon) = self.tampon(None) {
+            account.h = Some(tampons_de(&CHAMPS_COMPTE, &tampon));
+            account.updatedAt = crate::sync2::iso_depuis_tampon(&tampon);
+        }
+        let mut accounts = self.comptes_bruts();
         accounts.push(account.clone());
         self.write(ACCOUNTS_KEY, &accounts);
         self.log("create", Some(LogLabel::of_account(&account)), source.map(|s| serde_json::json!({ "source": s })));
@@ -512,7 +605,8 @@ impl Store {
     /// Modification : seuls les changements réels touchent `updatedAt` et
     /// l'historique ; le favori n'est jamais journalisé.
     pub fn update(&mut self, id: &str, patch: &AccountPatch) -> Result<Account> {
-        let mut accounts = self.list();
+        // Liste brute : modifier un élément supprimé le fait revivre (v2).
+        let mut accounts = self.comptes_bruts();
         let idx = accounts.iter().position(|a| a.id == id).ok_or_else(|| AppError::new("accountNotFound"))?;
         let mut next = accounts[idx].clone();
         let mut changes: Vec<Value> = Vec::new();
@@ -553,7 +647,26 @@ impl Store {
         if changes.is_empty() && next.counter == before.counter && next.favorite == before.favorite {
             return Ok(before);
         }
-        next.updatedAt = now_iso();
+        if self.temps.is_some() {
+            let mut champs: Vec<String> = changes.iter().filter_map(|c| c["field"].as_str().map(str::to_string)).collect();
+            if next.counter != before.counter {
+                champs.push("counter".into());
+            }
+            if next.favorite != before.favorite {
+                champs.push("favorite".into());
+            }
+            let mut h = before.h.clone().unwrap_or_default();
+            for champ in champs {
+                let plancher = h.get(&champ).cloned();
+                if let Some(t) = self.tampon(plancher.as_deref()) {
+                    h.insert(champ, t);
+                }
+            }
+            next.h = Some(h);
+            next.updatedAt = sommet(&next.h).map(crate::sync2::iso_depuis_tampon).unwrap_or_else(now_iso);
+        } else {
+            next.updatedAt = now_iso();
+        }
         accounts[idx] = next.clone();
         self.write(ACCOUNTS_KEY, &accounts);
         if !changes.is_empty() {
@@ -564,7 +677,7 @@ impl Store {
 
     /// Élément utilisé (code copié) : pour « Récemment utilisés ». Ni modification ni historique.
     pub fn touch_account(&mut self, id: &str) {
-        let mut accounts = self.list();
+        let mut accounts = self.comptes_bruts();
         if let Some(account) = accounts.iter_mut().find(|a| a.id == id) {
             account.usedAt = Some(now_iso());
             self.write(ACCOUNTS_KEY, &accounts);
@@ -575,9 +688,19 @@ impl Store {
         let Some(account) = self.list().into_iter().find(|a| a.id == id) else {
             return false;
         };
-        let accounts: Vec<Account> = self.list().into_iter().filter(|a| a.id != id).collect();
-        self.write(ACCOUNTS_KEY, &accounts);
-        self.bury(id);
+        if self.temps.is_some() {
+            // v2 : l'élément reste, sa trace le tue — elle se propage par la fusion.
+            let mut accounts = self.comptes_bruts();
+            for a in accounts.iter_mut().filter(|a| a.id == id) {
+                let plancher = sommet(&a.h).map(str::to_string);
+                a.t = self.tampon(plancher.as_deref());
+            }
+            self.write(ACCOUNTS_KEY, &accounts);
+        } else {
+            let accounts: Vec<Account> = self.comptes_bruts().into_iter().filter(|a| a.id != id).collect();
+            self.write(ACCOUNTS_KEY, &accounts);
+            self.bury(id);
+        }
         self.log("delete", Some(LogLabel::of_account(&account)), None);
         true
     }
@@ -595,7 +718,7 @@ impl Store {
     /* ───── Mots de passe des sites ───── */
 
     pub fn logins(&self) -> Vec<Login> {
-        self.read_array(LOGINS_KEY)
+        self.logins_bruts().into_iter().filter(|l| vivant(&l.h, &l.t)).collect()
     }
 
     pub fn find_login(&self, origin: &str, username: &str) -> Option<Login> {
@@ -626,8 +749,17 @@ impl Store {
             passwordChangedAt: now,
             favorite: false,
             usedAt: None,
+            h: None,
+            t: None,
+            extra: serde_json::Map::new(),
         };
-        let mut logins = self.logins();
+        let mut login = login;
+        if let Some(tampon) = self.tampon(None) {
+            login.h = Some(tampons_de(&CHAMPS_LOGIN, &tampon));
+            login.updatedAt = crate::sync2::iso_depuis_tampon(&tampon);
+            login.passwordChangedAt = login.updatedAt.clone();
+        }
+        let mut logins = self.logins_bruts();
         logins.push(login.clone());
         self.write(LOGINS_KEY, &logins);
         let mut details = serde_json::json!({ "kind": "login" });
@@ -641,7 +773,8 @@ impl Store {
     /// Modification : mêmes règles que le web — jamais de mot de passe dans le
     /// journal, seulement les champs modifiés ; le favori n'est pas journalisé.
     pub fn update_login(&mut self, id: &str, patch: &LoginPatch) -> Result<Login> {
-        let mut logins = self.logins();
+        // Liste brute, comme update : une modification fait revivre (v2).
+        let mut logins = self.logins_bruts();
         let idx = logins.iter().position(|l| l.id == id).ok_or_else(|| AppError::new("accountNotFound"))?;
         let mut next = logins[idx].clone();
         if let Some(username) = &patch.username { next.username = username.trim().to_string(); }
@@ -675,9 +808,30 @@ impl Store {
         if changed.is_empty() && next.favorite == before.favorite {
             return Ok(before);
         }
-        next.updatedAt = now_iso();
-        if changed.contains(&"password".to_string()) {
-            next.passwordChangedAt = next.updatedAt.clone();
+        if self.temps.is_some() {
+            let mut champs = changed.clone();
+            if next.favorite != before.favorite {
+                champs.push("favorite".into());
+            }
+            let mut h = before.h.clone().unwrap_or_default();
+            for champ in champs {
+                let plancher = h.get(&champ).cloned();
+                if let Some(t) = self.tampon(plancher.as_deref()) {
+                    h.insert(champ, t);
+                }
+            }
+            if changed.contains(&"password".to_string()) {
+                if let Some(t) = h.get("password") {
+                    next.passwordChangedAt = crate::sync2::iso_depuis_tampon(t);
+                }
+            }
+            next.h = Some(h);
+            next.updatedAt = sommet(&next.h).map(crate::sync2::iso_depuis_tampon).unwrap_or_else(now_iso);
+        } else {
+            next.updatedAt = now_iso();
+            if changed.contains(&"password".to_string()) {
+                next.passwordChangedAt = next.updatedAt.clone();
+            }
         }
         logins[idx] = next.clone();
         self.write(LOGINS_KEY, &logins);
@@ -689,7 +843,7 @@ impl Store {
 
     /// Élément utilisé (rempli, copié) : pour « Récemment utilisés ». Ni modification ni historique.
     pub fn touch_login(&mut self, id: &str) {
-        let mut logins = self.logins();
+        let mut logins = self.logins_bruts();
         if let Some(login) = logins.iter_mut().find(|l| l.id == id) {
             login.usedAt = Some(now_iso());
             self.write(LOGINS_KEY, &logins);
@@ -700,9 +854,18 @@ impl Store {
         let Some(login) = self.logins().into_iter().find(|l| l.id == id) else {
             return false;
         };
-        let logins: Vec<Login> = self.logins().into_iter().filter(|l| l.id != id).collect();
-        self.write(LOGINS_KEY, &logins);
-        self.bury(id);
+        if self.temps.is_some() {
+            let mut logins = self.logins_bruts();
+            for l in logins.iter_mut().filter(|l| l.id == id) {
+                let plancher = sommet(&l.h).map(str::to_string);
+                l.t = self.tampon(plancher.as_deref());
+            }
+            self.write(LOGINS_KEY, &logins);
+        } else {
+            let logins: Vec<Login> = self.logins_bruts().into_iter().filter(|l| l.id != id).collect();
+            self.write(LOGINS_KEY, &logins);
+            self.bury(id);
+        }
         self.log("delete", Some(LogLabel::of_login(&login)), Some(serde_json::json!({ "kind": "login" })));
         true
     }
@@ -710,7 +873,7 @@ impl Store {
     /* ───── Passkeys des sites ───── */
 
     pub fn site_passkeys(&self) -> Vec<SitePasskey> {
-        self.read_array(PASSKEYS_KEY)
+        self.passkeys_bruts().into_iter().filter(|p| vivant(&p.h, &p.t)).collect()
     }
 
     /// Un même compte (rp + identifiant utilisateur) n'a qu'une passkey : la
@@ -731,17 +894,33 @@ impl Store {
             createdAt: now.clone(),
             updatedAt: now,
             usedAt: None,
+            h: None,
+            t: None,
+            extra: serde_json::Map::new(),
         };
-        let mut current = self.site_passkeys();
+        let mut passkey = passkey;
+        let mut current = self.passkeys_bruts();
         let replaced: Vec<String> = current.iter()
-            .filter(|p| p.rpId == passkey.rpId && !passkey.userHandle.is_empty() && p.userHandle == passkey.userHandle)
+            .filter(|p| vivant(&p.h, &p.t) && p.rpId == passkey.rpId && !passkey.userHandle.is_empty() && p.userHandle == passkey.userHandle)
             .map(|p| p.id.clone())
             .collect();
-        current.retain(|p| !replaced.contains(&p.id));
-        current.push(passkey.clone());
-        self.write(PASSKEYS_KEY, &current);
-        for id in &replaced {
-            self.bury(id);
+        if let Some(tampon) = self.tampon(None) {
+            passkey.h = Some(tampons_de(&CHAMPS_PASSKEY, &tampon));
+            passkey.updatedAt = crate::sync2::iso_depuis_tampon(&tampon);
+            // v2 : les remplacées restent, tuées par leur trace.
+            for p in current.iter_mut().filter(|p| replaced.contains(&p.id)) {
+                let plancher = sommet(&p.h).map(str::to_string);
+                p.t = self.tampon(plancher.as_deref());
+            }
+            current.push(passkey.clone());
+            self.write(PASSKEYS_KEY, &current);
+        } else {
+            current.retain(|p| !replaced.contains(&p.id));
+            current.push(passkey.clone());
+            self.write(PASSKEYS_KEY, &current);
+            for id in &replaced {
+                self.bury(id);
+            }
         }
         let mut details = serde_json::json!({ "kind": "passkey" });
         if let Some(source) = source {
@@ -755,16 +934,25 @@ impl Store {
         let Some(passkey) = self.site_passkeys().into_iter().find(|p| p.id == id) else {
             return false;
         };
-        let passkeys: Vec<SitePasskey> = self.site_passkeys().into_iter().filter(|p| p.id != id).collect();
-        self.write(PASSKEYS_KEY, &passkeys);
-        self.bury(id);
+        if self.temps.is_some() {
+            let mut passkeys = self.passkeys_bruts();
+            for p in passkeys.iter_mut().filter(|p| p.id == id) {
+                let plancher = sommet(&p.h).map(str::to_string);
+                p.t = self.tampon(plancher.as_deref());
+            }
+            self.write(PASSKEYS_KEY, &passkeys);
+        } else {
+            let passkeys: Vec<SitePasskey> = self.passkeys_bruts().into_iter().filter(|p| p.id != id).collect();
+            self.write(PASSKEYS_KEY, &passkeys);
+            self.bury(id);
+        }
         self.log("delete", Some(LogLabel::of_passkey(&passkey)), Some(serde_json::json!({ "kind": "passkey" })));
         true
     }
 
     /// Élément utilisé (rempli, authentifié) : pour « Récemment utilisés ».
     pub fn touch_passkey(&mut self, id: &str) {
-        let mut passkeys = self.site_passkeys();
+        let mut passkeys = self.passkeys_bruts();
         if let Some(passkey) = passkeys.iter_mut().find(|p| p.id == id) {
             passkey.usedAt = Some(now_iso());
             self.write(PASSKEYS_KEY, &passkeys);
@@ -779,9 +967,22 @@ impl Store {
 
     pub fn clear_history(&mut self) {
         self.write(HISTORY_KEY, &Vec::<HistoryEntry>::new());
-        let mut deleted = self.read_deleted();
-        deleted.historyClearedAt = Some(now_iso());
-        self.write_deleted(&deleted);
+        if self.temps.is_some() {
+            // v2 : vidage tamponné dans le marqueur (les entrées d'avant ne reviennent pas).
+            let mut marqueur = match self.data.get(crate::sync2::SYNC_KEY).and_then(|raw| serde_json::from_str::<Value>(raw).ok()) {
+                Some(Value::Object(m)) => m,
+                _ => serde_json::Map::new(),
+            };
+            let avant = marqueur.get("historiqueVideLe").and_then(Value::as_str).map(str::to_string);
+            if let Some(t) = self.tampon(avant.as_deref()) {
+                marqueur.insert("historiqueVideLe".into(), Value::String(t));
+            }
+            self.write(crate::sync2::SYNC_KEY, &Value::Object(marqueur));
+        } else {
+            let mut deleted = self.read_deleted();
+            deleted.historyClearedAt = Some(now_iso());
+            self.write_deleted(&deleted);
+        }
     }
 
     /// Tags distincts, triés.
@@ -813,7 +1014,12 @@ impl Store {
         if unchanged {
             return;
         }
-        all.insert(name.to_string(), serde_json::json!({ "value": value, "at": now_iso() }));
+        let avant = all.get(name).and_then(|e| e.get("h")).and_then(Value::as_str).map(str::to_string);
+        let entree = match self.tampon(avant.as_deref()) {
+            Some(t) => serde_json::json!({ "value": value, "at": crate::sync2::iso_depuis_tampon(&t), "h": t }),
+            None => serde_json::json!({ "value": value, "at": now_iso() }),
+        };
+        all.insert(name.to_string(), entree);
         self.write(SETTINGS_KEY, &Value::Object(all));
     }
 
@@ -1177,5 +1383,116 @@ mod tests {
         sans.add(&NewAccount { issuer: "GitHub".into(), secret: "JBSWY3DPEHPK3PXP".into(), ..Default::default() }, None);
         let brut: Vec<Value> = serde_json::from_str(&sans.data[HISTORY_KEY]).unwrap();
         assert!(brut[0].get("appareil").is_none(), "appareil inconnu : champ absent, comme le web");
+    }
+
+    /* ───── Mode v2 : écritures tamponnées (miroir de web/test/store-v2.test.js) ───── */
+
+    const T0: i64 = 1_794_405_900_000;
+
+    fn store_v2() -> Store {
+        let mut store = Store::new();
+        store.appareil = Some("pc".into());
+        store.temps = Some(TempsStore { horloge: crate::sync2::Horloge::nouvelle(T0), appareil: "pc".into(), maintenant: T0 });
+        store
+    }
+
+    fn brut(store: &Store, cle: &str) -> Vec<Value> {
+        serde_json::from_str(&store.data[cle]).unwrap()
+    }
+
+    #[test]
+    fn v2_ajout_tamponne_tous_les_champs() {
+        let mut store = store_v2();
+        let compte = store.add(&new_account("GitHub", "JBSWY3DPEHPK3PXP", ""), None);
+        let h = compte.h.clone().unwrap();
+        assert_eq!(h.len(), CHAMPS_COMPTE.len());
+        assert!(h.values().all(|t| t == &h["issuer"]), "un seul tampon pour la création");
+        assert!(h["issuer"].ends_with("pc"));
+        assert_eq!(compte.updatedAt, crate::sync2::iso_depuis_tampon(&h["issuer"]));
+    }
+
+    #[test]
+    fn v2_modification_ne_retamponne_que_les_champs_changes() {
+        let mut store = store_v2();
+        let compte = store.add(&new_account("GitHub", "JBSWY3DPEHPK3PXP", ""), None);
+        let avant = compte.h.clone().unwrap();
+        let apres = store.update(&compte.id, &AccountPatch { issuer: Some("GitHub Pro".into()), ..Default::default() }).unwrap();
+        let h = apres.h.unwrap();
+        assert!(h["issuer"] > avant["issuer"]);
+        assert_eq!(h["secret"], avant["secret"], "champ inchangé : même tampon");
+    }
+
+    #[test]
+    fn v2_suppression_garde_l_element_mort_et_une_modification_le_fait_revivre() {
+        let mut store = store_v2();
+        let compte = store.add(&new_account("GitHub", "JBSWY3DPEHPK3PXP", ""), None);
+        assert!(store.remove(&compte.id));
+        assert!(store.list().is_empty(), "invisible des lectures");
+        let items = brut(&store, ACCOUNTS_KEY);
+        assert_eq!(items.len(), 1, "gardé dans la copie pour propager la trace");
+        assert!(items[0]["t"].is_string());
+        assert!(!store.data.contains_key(DELETED_KEY), "pas de trace v1");
+        store.update(&compte.id, &AccountPatch { issuer: Some("GitHub bis".into()), ..Default::default() }).unwrap();
+        assert_eq!(store.list().len(), 1, "une modification postérieure à la trace le fait revivre");
+    }
+
+    #[test]
+    fn v2_logins_mot_de_passe_date_par_son_tampon() {
+        let mut store = store_v2();
+        let login = store.add_login(&new_login("https://exemple.fr", "moi", "un"), None).unwrap();
+        let apres = store.update_login(&login.id, &LoginPatch { password: Some("deux".into()), ..Default::default() }).unwrap();
+        let h = apres.h.clone().unwrap();
+        assert_eq!(apres.passwordChangedAt, crate::sync2::iso_depuis_tampon(&h["password"]));
+        assert!(store.remove_login(&login.id));
+        assert!(store.logins().is_empty());
+        assert_eq!(brut(&store, LOGINS_KEY).len(), 1);
+    }
+
+    #[test]
+    fn v2_vidage_d_historique_et_reglages_tamponnes() {
+        let mut store = store_v2();
+        store.add(&new_account("GitHub", "JBSWY3DPEHPK3PXP", ""), None);
+        store.clear_history();
+        let marqueur: Value = serde_json::from_str(&store.data[crate::sync2::SYNC_KEY]).unwrap();
+        assert!(marqueur["historiqueVideLe"].as_str().unwrap().ends_with("pc"));
+        store.set_setting("theme", &serde_json::json!("sombre"));
+        let premier = store.settings()["theme"]["h"].as_str().unwrap().to_string();
+        store.set_setting("theme", &serde_json::json!("clair"));
+        assert!(store.settings()["theme"]["h"].as_str().unwrap() > premier.as_str());
+    }
+
+    #[test]
+    fn v2_passkey_remplacee_tracee() {
+        let mut store = store_v2();
+        let nouvelle = |id: &str| NewPasskey {
+            credentialId: id.into(),
+            rpId: "exemple.fr".into(),
+            userHandle: "u1".into(),
+            privateKey: "k".into(),
+            ..Default::default()
+        };
+        let premiere = store.add_passkey(&nouvelle("c1"), None);
+        store.add_passkey(&nouvelle("c2"), None);
+        let vivantes = store.site_passkeys();
+        assert_eq!(vivantes.len(), 1);
+        assert_eq!(vivantes[0].credentialId, "c2");
+        let morte = brut(&store, PASSKEYS_KEY).into_iter().find(|p| p["id"] == premiere.id.as_str()).unwrap();
+        assert!(morte["t"].is_string());
+    }
+
+    #[test]
+    fn tampons_et_champs_inconnus_gardes_meme_sans_horloge() {
+        let mut store = Store::new();
+        store.data.insert(
+            ACCOUNTS_KEY.into(),
+            serde_json::json!([{ "id": "a1", "type": "totp", "issuer": "GitHub", "account": "", "secret": "JBSWY3DPEHPK3PXP",
+                "algorithm": "SHA1", "digits": 6, "period": 30, "counter": 0, "tag": "", "description": "", "favorite": false,
+                "createdAt": "2026-11-11T14:00:00.000Z", "updatedAt": "2026-11-11T14:00:00.000Z",
+                "h": { "issuer": "1794405600000000000000tel" }, "futur": 1 }]).to_string(),
+        );
+        store.touch_account("a1");
+        let item = &brut(&store, ACCOUNTS_KEY)[0];
+        assert_eq!(item["h"]["issuer"], "1794405600000000000000tel", "tampon gardé");
+        assert_eq!(item["futur"], 1, "champ inconnu gardé");
     }
 }

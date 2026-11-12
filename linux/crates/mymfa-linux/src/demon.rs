@@ -212,14 +212,33 @@ impl Demon {
     /// ne se croisent pas), puis changement annoncé. Refusé par `f` : rien
     /// n'est écrit.
     pub fn modifier<T, E>(&self, f: impl FnOnce(&mut mymfa_core::store::Store) -> Result<T, E>) -> Result<Result<T, E>, Refus> {
+        // Horloge de synchro v2 de cet appareil : les écritures sont tamponnées (SYN-07),
+        // comme celles du web. Lue avant le verrou du coffre (jamais imbriqués dans cet
+        // ordre-là), reportée après l'écriture — elle a avancé.
+        let temps = {
+            let s = self.synchro();
+            s.etat.as_ref().map(|e| mymfa_core::store::TempsStore {
+                horloge: e.horloge,
+                appareil: e.appareil.clone(),
+                maintenant: s.reference.maintenant(chemins::maintenant() as i64),
+            })
+        };
+        let mut horloge_apres: Option<mymfa_core::sync2::Horloge> = None;
         let r = {
             let mut etat = self.etat();
             let c = etat.coffre.as_mut().ok_or(Refus::Verrouille)?;
             let appareil = (!self.appareil.is_empty()).then(|| self.appareil.clone());
+            let sortie = &mut horloge_apres;
             let (r, texte) = c.modifier(move |store| {
                 store.appareil = appareil; // l'historique nomme cet appareil (SYN-09)
-                f(store)
+                store.temps = temps;
+                let r = f(store);
+                *sortie = store.temps.take().map(|t| t.horloge);
+                r
             })?;
+            if let Some(h) = horloge_apres {
+                avancer_horloge(&mut self.synchro(), h);
+            }
             let Some(texte) = texte else { return Ok(r) };
             let chemin = self.chemins.coffre();
             chemins::ecrire_prive(&chemin, texte.as_bytes()).map_err(|e| Refus::Echec(format!("coffre non écrit : {e}")))?;
@@ -843,7 +862,12 @@ impl Demon {
         let _ = &mut sauvegarde;
         {
             let mut s = self.synchro();
+            // Une modification faite pendant le cycle a pu avancer l'horloge : jamais de recul.
+            let horloge_courante = s.etat.as_ref().map(|e| e.horloge);
             s.etat = Some(etat_fusion.clone());
+            if let Some(h) = horloge_courante {
+                avancer_horloge(&mut s, h);
+            }
             s.sauvegarde = sauvegarde.clone();
             s.jetons = Some(jetons);
             s.reference = reference;
@@ -870,6 +894,15 @@ fn refus_drive(e: mymfa_core::AppError) -> Refus {
 
 /// Charge l'état de synchro persisté (identifiant d'appareil, horloge, repère,
 /// révision Drive vue). Rien de secret : fichier en clair.
+/// L'horloge hybride de l'appareil ne recule jamais : (l, c) le plus grand gagne.
+fn avancer_horloge(s: &mut Synchro, h: mymfa_core::sync2::Horloge) {
+    if let Some(etat) = s.etat.as_mut() {
+        if (h.l, h.c) > (etat.horloge.l, etat.horloge.c) {
+            etat.horloge = h;
+        }
+    }
+}
+
 /// Nom lisible de ce poste pour le registre des appareils (SYN-09) : le nom
 /// d'hôte, rien de plus.
 fn nom_d_hote() -> Option<String> {
@@ -948,6 +981,7 @@ mod tests {
         assert_eq!(description.type_, "linux");
 
         d.deverrouiller(Zeroizing::new(MDP.into())).await.unwrap();
+        let horloge_avant = d.synchro().etat.as_ref().unwrap().horloge;
         d.modifier(|store| {
             store.add(&mymfa_core::store::NewAccount { issuer: "GitHub".into(), secret: "JBSWY3DPEHPK3PXP".into(), ..Default::default() }, None);
             Ok::<(), ()>(())
@@ -956,6 +990,17 @@ mod tests {
         .unwrap();
         let historique = d.lire(|c| c.store().history()).unwrap();
         assert_eq!(historique[0].appareil.as_deref(), Some(d.appareil.as_str()));
+        // Écriture tamponnée v2 par cet appareil ; l'horloge de synchro a avancé.
+        let compte = d.lire(|c| c.store().list()).unwrap().remove(0);
+        let h = compte.h.expect("champs tamponnés");
+        assert!(h["issuer"].ends_with(&d.appareil), "tampon de cet appareil");
+        let horloge_apres = d.synchro().etat.as_ref().unwrap().horloge;
+        assert!((horloge_apres.l, horloge_apres.c) > (horloge_avant.l, horloge_avant.c));
+        // Une suppression laisse une trace (v2), pas un enterrement v1.
+        let id = compte.id.clone();
+        d.modifier(|store| Ok::<bool, ()>(store.remove(&id))).unwrap().unwrap();
+        assert!(d.lire(|c| c.store().list()).unwrap().is_empty());
+        assert!(d.lire(|c| c.store().data.contains_key(mymfa_core::store::DELETED_KEY)).unwrap() == false);
     }
 
     #[tokio::test]
