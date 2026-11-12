@@ -105,6 +105,7 @@
     },
     driveEvery: (hours) => send({ type: 'app:driveEvery', hours }),
     driveBackedUp: () => send({ type: 'app:driveBackedUp' }).catch(() => null),
+    driveInfo: () => send({ type: 'app:driveInfo' }),
   };
 
   chrome.runtime.onMessage.addListener((message) => {

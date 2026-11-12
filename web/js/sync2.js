@@ -57,6 +57,11 @@
    * partout : un appareil nouveau ou hors ligne pendant la suppression doit avoir
    * le temps de l'apprendre. */
   const RETENTION_TRACE_MS = 30 * 24 * 60 * 60 * 1000;
+  /** L'activité d'un appareil (actifLe) n'est rafraîchie dans le registre que si autre
+   * chose part déjà vers la copie distante, ou si elle date de plus d'un jour : sinon
+   * chaque fusion différerait de Drive et le coffre repartirait à chaque cycle. Un jour
+   * suffit largement face au silence d'un an. */
+  const ACTIVITE_PAS_MS = 24 * 60 * 60 * 1000;
 
   // `l` de référence : ms UTC sur 13 chiffres (jusqu'en 2286), compteur
   // hexadécimal sur 8 chiffres, identifiant d'appareil. Comparé en texte,
@@ -861,7 +866,18 @@
     // effacées) et son activité fraîche : il ne se fera pas retirer du registre
     // tant qu'il se synchronise. Il se décrit s'il sait le faire (SYN-09), sinon
     // garde la description reçue.
-    const description = etat.type ? lireDescription(etat) : lireDescription(marqueur.appareils[etat.appareil]);
+    const precedent = marqueur.appareils[etat.appareil];
+    const description = etat.type ? lireDescription(etat) : lireDescription(precedent);
+    const actifRecent =
+      precedent && precedent.actifLe > 0 && precedent.actifLe <= maintenant && maintenant - precedent.actifLe < ACTIVITE_PAS_MS;
+    if (actifRecent) {
+      marqueur.appareils[etat.appareil] = { vu: etat.repere, actifLe: precedent.actifLe, ...description };
+      ecrireMarqueur(resultat, marqueur);
+      if (!differentDe(resultat, distant)) {
+        rapport.aEnvoyer = false;
+        return { donnees: resultat, rapport };
+      }
+    }
     marqueur.appareils[etat.appareil] = { vu: etat.repere, actifLe: maintenant, ...description };
     ecrireMarqueur(resultat, marqueur);
 
@@ -921,9 +937,11 @@
   return {
     SYNC_KEY,
     APPAREIL_HERITAGE,
+    COLLECTIONS,
     ECART_FUTUR_MS,
     SILENCE_MAX_MS,
     RETENTION_TRACE_MS,
+    ACTIVITE_PAS_MS,
     Horloge,
     encoderTampon,
     decoderL,

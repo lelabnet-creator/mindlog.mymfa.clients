@@ -20,7 +20,9 @@
   'use strict';
 
   const { t } = I18n;
-  const SENSITIVE = [Store.ACCOUNTS_KEY, Store.HISTORY_KEY, Store.DELETED_KEY, Store.LOGINS_KEY, Store.PASSKEYS_KEY, Store.SETTINGS_KEY];
+  // Le marqueur v2 (registre des appareils, vidage d'historique) vit avec les données : dans le
+  // coffre quand il y en a un, sinon Store le lirait dans localStorage au lieu de la copie déchiffrée.
+  const SENSITIVE = [Store.ACCOUNTS_KEY, Store.HISTORY_KEY, Store.DELETED_KEY, Store.LOGINS_KEY, Store.PASSKEYS_KEY, Store.SETTINGS_KEY, Sync2.SYNC_KEY];
   // Jamais de mots de passe ni de passkeys hors du coffre : toute écriture de ces clés
   // sans coffre est refusée (les comptes OTP et l'historique restent tolérés en clair).
   const PLAIN_FORBIDDEN = [Store.LOGINS_KEY, Store.PASSKEYS_KEY];
@@ -57,7 +59,22 @@
     /* dernier décalage illisible : horloge locale non corrigée */
   }
   const heure = Heure.create({ decalageInitial: decalageConnu });
-  const temps = Sync2.etatPersistant(localStorage, () => heure.maintenant());
+
+  /** Ce que cet appareil écrit de lui-même dans le registre v2 (SYN-09) : type de client et
+   *  « navigateur · système », sans rien d'identifiant au-delà. Le libellé lisible (« App
+   *  web », « Extension ») est composé à l'affichage, dans la langue de chacun. */
+  function descriptionAppareil() {
+    const ua = (typeof navigator !== 'undefined' && navigator.userAgent) || '';
+    const navigateur = /Edg\//.test(ua) ? 'Edge' : /OPR\//.test(ua) ? 'Opera' : /Firefox\//.test(ua) ? 'Firefox'
+      : /Chrome\//.test(ua) ? 'Chrome' : /Safari\//.test(ua) ? 'Safari' : '';
+    const systeme = /Android/.test(ua) ? 'Android' : /iPhone|iPad/.test(ua) ? 'iOS' : /Mac OS X/.test(ua) ? 'macOS'
+      : /Windows/.test(ua) ? 'Windows' : /Linux|X11|CrOS/.test(ua) ? 'Linux' : '';
+    // L'app embarquée par l'extension : même type que son service d'arrière-plan, « app » pour
+    // les distinguer (deux appareils, deux horloges).
+    const nom = [navigateur, systeme, host ? 'app' : ''].filter(Boolean).join(' · ');
+    return { type: host ? 'extension' : 'web', ...(nom ? { nom } : {}) };
+  }
+  const temps = Sync2.etatPersistant(localStorage, () => heure.maintenant(), descriptionAppareil());
   /** Reçoit l'heure des serveurs Google (ms) d'une réponse Drive : corrige T(),
    * alerte au-delà de 5 min, dernier décalage conservé pour la session suivante. */
   function noterHeureServeur(heureServeurMs) {
@@ -114,6 +131,7 @@
   function writeRecord() {
     localStorage.setItem(Vault.VAULT_KEY, JSON.stringify(record));
     localStorage.setItem(MODIFIED_KEY, new Date().toISOString());
+    if (hooks.onWrite) hooks.onWrite(); // synchro Drive planifiée par l'app
   }
 
   // Écritures en rafale (un import : deux par élément) : un seul chiffrement en attente, qui prend
@@ -352,6 +370,7 @@
     for (const [key, value] of mem) localStorage.setItem(key, value);
     localStorage.removeItem(Vault.VAULT_KEY);
     localStorage.removeItem(PREVIOUS_KEY);
+    localStorage.removeItem(JOURNAL_KEY); // chiffré par une clé qui disparaît
     restoreUndo = false;
     record = null;
     dek = null;
@@ -366,6 +385,7 @@
     localStorage.removeItem(Vault.VAULT_KEY);
     localStorage.removeItem(MODIFIED_KEY);
     localStorage.removeItem(PREVIOUS_KEY);
+    localStorage.removeItem(JOURNAL_KEY);
     restoreUndo = false;
     for (const key of SENSITIVE) localStorage.removeItem(key);
     record = null;
@@ -383,6 +403,62 @@
       writeRecord();
     });
     hooks.log('passkeyRemoved');
+  }
+
+  /* ───────────── Synchro v2 avec Drive (SYN-10) ───────────── */
+
+  const JOURNAL_KEY = 'mymfa.syncJournal.v1';
+  const AAD_JOURNAL = 'mymfa:sync:journal:v1';
+  const JOURNAL_MAX = 200;
+
+  function exigerOuvert() {
+    if (!record || !dek) throw new Vault.VaultError('locked');
+  }
+
+  /** Copie des données déchiffrées (clé → JSON en texte), pour la fusion. */
+  function donnees() {
+    exigerOuvert();
+    return Object.fromEntries(mem);
+  }
+
+  /** Données d'un autre enregistrement (la copie Drive), ouvertes par la clé de ce coffre.
+   *  Une autre clé (un autre coffre) échoue : `corrupted`. */
+  async function dechiffrerAutre(autre) {
+    exigerOuvert();
+    return Vault.decryptData(dek, autre.data);
+  }
+
+  /** Remplace les données par le résultat d'une fusion, rechiffrées. */
+  async function remplacerDonnees(map) {
+    exigerOuvert();
+    mem = new Map(Object.entries(map));
+    await persist();
+  }
+
+  /** Journal de synchro de cet appareil : chiffré par la clé du coffre (AAD propre), jamais
+   *  synchronisé, le plus récent en tête, plafonné. Illisible (autre coffre) : vide. */
+  async function lireJournal() {
+    if (!record || !dek) return [];
+    const key = dek;
+    try {
+      const enveloppe = JSON.parse(localStorage.getItem(JOURNAL_KEY) || 'null');
+      if (!enveloppe || !enveloppe.data) return [];
+      const contenu = await Vault.decryptJson(key, enveloppe.data, AAD_JOURNAL);
+      return Array.isArray(contenu.entrees) ? contenu.entrees : [];
+    } catch {
+      return [];
+    }
+  }
+
+  async function ajouterJournal(entree) {
+    if (!record || !dek) return;
+    const key = dek;
+    await enqueue(async () => {
+      if (dek !== key) return;
+      const entrees = [entree, ...(await lireJournal())].slice(0, JOURNAL_MAX);
+      const data = await Vault.encryptJson(key, { entrees }, AAD_JOURNAL);
+      localStorage.setItem(JOURNAL_KEY, JSON.stringify({ v: 1, data }));
+    });
   }
 
   /** Enregistrement chiffré tel que stocké, une fois les écritures en cours terminées. */
@@ -818,6 +894,11 @@
     passkeysAvailable,
     exportVault,
     importVault,
+    donnees,
+    dechiffrerAutre,
+    remplacerDonnees,
+    lireJournal,
+    ajouterJournal,
     undoRestore,
     canUndoRestore,
     modifiedAt,

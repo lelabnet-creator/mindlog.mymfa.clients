@@ -52,6 +52,10 @@ pub const SILENCE_MAX_MS: i64 = 365 * 24 * 60 * 60 * 1000;
 /// pendant la suppression doit avoir le temps de l'apprendre (sinon, à son
 /// réveil, il ferait revivre l'élément supprimé).
 pub const RETENTION_TRACE_MS: i64 = 30 * 24 * 60 * 60 * 1000;
+/// L'activité d'un appareil (`actifLe`) n'est rafraîchie dans le registre que si
+/// autre chose part déjà vers la copie distante, ou si elle date de plus d'un jour :
+/// sinon chaque fusion différerait de Drive et le coffre repartirait à chaque cycle.
+pub const ACTIVITE_PAS_MS: i64 = 24 * 60 * 60 * 1000;
 
 /// `l` de référence : ms UTC sur 13 chiffres (jusqu'en 2286), compteur hexadécimal
 /// sur 8 chiffres, identifiant d'appareil. Comparé en texte, l'ordre est (l, c, D).
@@ -764,16 +768,26 @@ pub fn fusion(locale: &DataMap, distante: &DataMap, etat: &mut EtatSynchro, main
     // et son activité fraîche : il ne se fera pas retirer du registre tant qu'il
     // se synchronise. Il se décrit s'il sait le faire (SYN-09), sinon garde la
     // description reçue.
-    let position = marqueur.appareils.iter().position(|(a, _)| a == &etat.appareil);
-    let description = etat
-        .description
-        .clone()
-        .or_else(|| position.and_then(|i| marqueur.appareils[i].1.description.clone()));
-    let soi = Vu { tampon: etat.repere.clone(), actif_le: maintenant, description };
-    match position {
-        Some(i) => marqueur.appareils[i].1 = soi,
-        None => marqueur.appareils.push((etat.appareil.clone(), soi)),
+    let position = match marqueur.appareils.iter().position(|(a, _)| a == &etat.appareil) {
+        Some(i) => i,
+        None => {
+            marqueur.appareils.push((etat.appareil.clone(), Vu::default()));
+            marqueur.appareils.len() - 1
+        }
+    };
+    let precedent = marqueur.appareils[position].1.clone();
+    let description = etat.description.clone().or_else(|| precedent.description.clone());
+    let actif_recent =
+        precedent.actif_le > 0 && precedent.actif_le <= maintenant && maintenant - precedent.actif_le < ACTIVITE_PAS_MS;
+    if actif_recent {
+        marqueur.appareils[position].1 = Vu { tampon: etat.repere.clone(), actif_le: precedent.actif_le, description: description.clone() };
+        ecrire_marqueur(&mut resultat, &marqueur);
+        if !different_de(&resultat, &distante) {
+            rapport.a_envoyer = false;
+            return (resultat, rapport);
+        }
     }
+    marqueur.appareils[position].1 = Vu { tampon: etat.repere.clone(), actif_le: maintenant, description };
     ecrire_marqueur(&mut resultat, &marqueur);
 
     rapport.a_envoyer = different_de(&resultat, &distante);
@@ -2151,5 +2165,17 @@ mod tests {
         let (ac, _) = fusion(&ab, &c, &mut EtatSynchro::nouvelle("x", T0 + 6 * MINUT), T0 + 6 * MINUT);
         assert_eq!(registre(&ac)["tel"]["nom"], "Pixel", "une copie sans description ne l'efface pas");
         assert_eq!(registre(&ac)["tel"]["actifLe"], T0 + 5 * MINUT);
+    }
+
+    #[test]
+    fn rien_de_nouveau_activite_pas_reecrite_avant_un_jour() {
+        let etat = &mut EtatSynchro::nouvelle("pc", T0).avec_description("linux", None);
+        let (premiere, _) = fusion(&copie(vec![compte("a", "GitHub", "2026-11-11T14:00:00.000Z")]), &DataMap::new(), etat, T0);
+        let (plus_tard, rapport) = fusion(&premiere, &premiere, etat, T0 + 180 * MINUT);
+        assert!(!rapport.a_envoyer, "trois heures après, sans nouveauté : rien à envoyer");
+        assert_eq!(registre(&plus_tard)["pc"]["actifLe"], T0);
+        let (lendemain, rapport) = fusion(&premiere, &premiere, etat, T0 + ACTIVITE_PAS_MS);
+        assert!(rapport.a_envoyer, "un jour après : activité rafraîchie");
+        assert_eq!(registre(&lendemain)["pc"]["actifLe"], T0 + ACTIVITE_PAS_MS);
     }
 }

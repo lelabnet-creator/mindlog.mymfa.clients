@@ -11,6 +11,8 @@
   const EXPIRING_SECONDS = 5;
   const THEME_KEY = 'mymfa.theme';
   const DRIVE_LAST_KEY = 'mymfa.driveLastBackup';
+  // Métadonnées Drive du fichier de sauvegarde (nom, taille, dates), vues lors du dernier échange.
+  const DRIVE_FILE_KEY = 'mymfa.driveFile';
   const EXTENSION_SYNC_KEY = 'mymfa.extensionSync';
   const DRIVE_CLIENT_KEY = 'mymfa.googleClientId';
   // config.js (déploiement) prime ; sinon identifiant collé dans les réglages.
@@ -1264,15 +1266,143 @@
     return DRIVE_DEPLOY_ID || readPref(DRIVE_CLIENT_KEY) || '';
   }
 
+  let driveTokens = null;
+
   function drive() {
     const clientId = driveClientId();
     if (!driveClient || driveClientFor !== clientId) {
       // Dans l'extension, pas de script Google distant (interdit en MV3) : le jeton vient de l'hôte.
-      const tokens = HOST ? HOST.driveTokens(clientId) : Drive.googleTokenProvider(clientId);
-      driveClient = Drive.createClient({ fetch: (...args) => window.fetch(...args), getToken: tokens.getToken });
+      driveTokens = HOST ? HOST.driveTokens(clientId) : Drive.googleTokenProvider(clientId);
+      driveClient = Drive.createClient({ fetch: (...args) => window.fetch(...args), getToken: driveTokens.getToken });
       driveClientFor = clientId;
     }
     return driveClient;
+  }
+
+  // Heure des serveurs Google reçue d'une réponse Drive (SYN-08) : corrige T(),
+  // alerte au-delà de 5 min de décalage, dernier décalage conservé hors ligne.
+  function noterHeureDrive(entreeDrive) {
+    const ms = Heure.heureDrive(entreeDrive);
+    if (ms === null) return;
+    const mesure = Lock.noterHeureServeur(ms);
+    if (mesure && mesure.alerte) toast(t('toast.horlogeDecalee', { minutes: Math.round(Math.abs(mesure.decalageMs) / 60000) }));
+  }
+
+  /* Synchro v2 avec Drive (SYN-10) : un cycle à la fois. Dans l'extension, son service
+   * d'arrière-plan est le seul à écrire sur Drive : l'app lui délègue le cycle. */
+  let syncEnCours = null;
+  let syncPlanifiee = null;
+
+  function synchroniser() {
+    if (syncEnCours) return syncEnCours;
+    syncEnCours = (async () => {
+      if (Lock.status() !== 'unlocked') throw Object.assign(new Error('locked'), { code: 'locked' });
+      let entree;
+      if (HOST && HOST.driveSync) {
+        entree = await HOST.driveSync();
+        if (entree && entree.fichier) rememberDriveFile(entree.fichier);
+      } else {
+        entree = await DriveSync.creer({
+          client: drive(),
+          coffre: {
+            donnees: Lock.donnees,
+            dechiffrerAutre: Lock.dechiffrerAutre,
+            remplacerDonnees: Lock.remplacerDonnees,
+            exporter: Lock.exportVault,
+            ajouterJournal: Lock.ajouterJournal,
+          },
+          temps: Lock.temps,
+          maintenant: () => Lock.heure.maintenant(),
+          source: 'app',
+          surReponse: (fichier) => {
+            noterHeureDrive(fichier);
+            rememberDriveFile(fichier);
+          },
+        }).cycle();
+        // Dans l'extension (hôte ancien, sans délégation) : la synchro compte pour sa politique.
+        if (HOST) {
+          const res = await HOST.driveBackedUp();
+          if (res && hostDrive) hostDrive.next = res.next;
+        }
+      }
+      writePref(DRIVE_LAST_KEY, new Date().toISOString());
+      return entree;
+    })().finally(() => {
+      syncEnCours = null;
+    });
+    return syncEnCours;
+  }
+
+  /** Toast de fin de cycle : ce qui a été reçu et envoyé. */
+  function messageSynchro(entree) {
+    if (!entree || !entree.totaux) return t('toast.syncDone', { recus: 0, envoyes: 0 });
+    const somme = (x) => x.ajout + x.modification + x.suppression;
+    if (entree.resultat === 'premier') return t('toast.syncFirst');
+    if (entree.resultat === 'aJour') return t('toast.syncUpToDate');
+    return t('toast.syncDone', { recus: somme(entree.totaux.recus), envoyes: somme(entree.totaux.envoyes) });
+  }
+
+  /** Synchro automatique de l'app web : au déverrouillage et peu après une modification —
+   *  seulement si Drive a déjà servi ici et qu'un jeton Google est en mémoire (jamais de
+   *  fenêtre Google imprévue). Dans l'extension, l'arrière-plan tient sa propre politique. */
+  function planifierSynchro(delai = 5000) {
+    if (HOST || syncEnCours) return;
+    if (!driveClientId() || Lock.status() !== 'unlocked' || !readPref(DRIVE_LAST_KEY)) return;
+    drive();
+    if (!driveTokens || !driveTokens.hasToken || !driveTokens.hasToken()) return;
+    clearTimeout(syncPlanifiee);
+    syncPlanifiee = setTimeout(() => {
+      synchroniser()
+        .then(() => renderAll())
+        .catch(() => renderDrive());
+    }, delai);
+  }
+
+  function driveFile() {
+    try {
+      return JSON.parse(readPref(DRIVE_FILE_KEY) || 'null');
+    } catch {
+      return null;
+    }
+  }
+
+  /** Retient les métadonnées d'une réponse Drive, sauf si l'on en connaît déjà de plus récentes. */
+  function rememberDriveFile(meta) {
+    if (!meta || !meta.modifiedTime) return;
+    const known = driveFile();
+    if (known && known.modifiedTime > meta.modifiedTime) return;
+    const { name, size, createdTime, modifiedTime } = meta;
+    writePref(DRIVE_FILE_KEY, JSON.stringify({ name, size, createdTime, modifiedTime }));
+  }
+
+  function forgetDriveFile() {
+    try {
+      localStorage.removeItem(DRIVE_FILE_KEY);
+    } catch {
+      /* stockage indisponible */
+    }
+  }
+
+  function formatSize(bytes) {
+    const n = Number(bytes);
+    if (!Number.isFinite(n)) return '';
+    const [value, unit] = n < 1024 ? [n, 'byte'] : n < 1048576 ? [n / 1024, 'kilobyte'] : [n / 1048576, 'megabyte'];
+    return new Intl.NumberFormat(I18n.getLocale(), { style: 'unit', unit, unitDisplay: 'short', maximumFractionDigits: 1 }).format(value);
+  }
+
+  /** Fiche du fichier de sauvegarde : chemin complet, puis taille et dates si Drive les a données. */
+  function renderDriveFile(configured) {
+    const box = $('drive-file');
+    box.hidden = !configured;
+    if (!configured) return;
+    const meta = driveFile();
+    const row = (label, value) => [h('dt', { text: t(label) }), h('dd', {}, [value])];
+    const rows = [row('drive.file', h('code', { text: `Google Drive/${Drive.FOLDER}/${(meta && meta.name) || Drive.FILE_NAME}` }))];
+    if (meta && meta.size != null) rows.push(row('drive.size', formatSize(meta.size)));
+    if (meta && meta.modifiedTime) rows.push(row('drive.modified', I18n.formatDateTime(meta.modifiedTime)));
+    if (meta && meta.createdTime) rows.push(row('drive.created', I18n.formatDateTime(meta.createdTime)));
+    box.replaceChildren(...rows.flat());
+    box.title = t('drive.hiddenFolder');
   }
 
   function renderDrive() {
@@ -1298,6 +1428,7 @@
     }
     $('drive-status').textContent = status;
     $('drive-hint').textContent = hint;
+    renderDriveFile(configured && !editingClientId);
     $('drive-card').classList.toggle('is-suggested', configured && encrypted && (!last || (modified && modified > last)));
     const setup = !configured || editingClientId;
     $('drive-setup').hidden = !setup;
@@ -1367,8 +1498,20 @@
         if (!settings) return;
         if (settings.driveClientId && !readPref(DRIVE_CLIENT_KEY)) writePref(DRIVE_CLIENT_KEY, settings.driveClientId);
         if (settings.driveLastSync && settings.driveLastSync > (readPref(DRIVE_LAST_KEY) || '')) writePref(DRIVE_LAST_KEY, settings.driveLastSync);
+        rememberDriveFile(settings.driveFile);
         hostDrive = { every: settings.driveEvery, next: settings.driveNext };
         renderDrive();
+        // Drive relié : l'extension relit les métadonnées du fichier, sans fenêtre Google.
+        if (settings.driveLinked) {
+          HOST.driveInfo()
+            .then((res) => {
+              if (!res) return;
+              if (res.file) rememberDriveFile(res.file);
+              else forgetDriveFile(); // plus de sauvegarde sur Drive
+              renderDrive();
+            })
+            .catch(() => {});
+        }
       });
       $('drive-every').addEventListener('change', async () => {
         const every = Number($('drive-every').value);
@@ -1389,29 +1532,11 @@
       $('drive-client-id').focus();
     });
     $('btn-drive-enable').addEventListener('click', () => Lock.openEnable());
-  // Heure des serveurs Google reçue d'une réponse Drive (SYN-08) : corrige T(),
-  // alerte au-delà de 5 min de décalage, dernier décalage conservé hors ligne.
-  function noterHeureDrive(entreeDrive) {
-    const ms = Heure.heureDrive(entreeDrive);
-    if (ms === null) return;
-    const mesure = Lock.noterHeureServeur(ms);
-    if (mesure && mesure.alerte) toast(t('toast.horlogeDecalee', { minutes: Math.round(Math.abs(mesure.decalageMs) / 60000) }));
-  }
     $('btn-drive-backup').addEventListener('click', (event) =>
       busy(event.currentTarget, async () => {
-        // Journalisé avant l'export : la sauvegarde contient sa propre trace.
-        store.log('security', null, { event: 'driveBackup' });
-        const content = await Lock.exportVault();
-        if (!content) throw Object.assign(new Error('needsPassword'), { code: 'locked' });
-        const envoye = await drive().upload(content);
-        noterHeureDrive(envoye);
-        writePref(DRIVE_LAST_KEY, new Date().toISOString());
-        // Dans l'extension : la sauvegarde compte pour sa politique automatique.
-        if (HOST) {
-          const res = await HOST.driveBackedUp();
-          if (res && hostDrive) hostDrive.next = res.next;
-        }
-        toast(t('toast.driveSaved'));
+        const entree = await synchroniser();
+        toast(messageSynchro(entree));
+        renderAll();
       })
     );
     $('btn-drive-restore').addEventListener('click', (event) =>
@@ -1419,6 +1544,7 @@
         const backup = await drive().download();
         if (!Vault.parse(backup.content)) throw new Vault.VaultError('invalidBackup');
         noterHeureDrive(backup);
+        rememberDriveFile(backup.file);
         pendingRestore = backup;
       })
     );
@@ -1527,11 +1653,13 @@
         renderExportVault();
       },
       onRefresh: renderAll,
+      onWrite: () => planifierSynchro(),
       onUnlock: () => {
         syncPrefsWithVault();
         state.codes.clear();
         renderAll();
         route();
+        planifierSynchro(1000);
       },
       onLock: () => {
         // Plus rien de lisible en mémoire ni à l'écran.

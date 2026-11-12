@@ -143,7 +143,7 @@ try {
     assert.equal(JSON.parse(await vaultRaw()).passkeys.length, 0);
   });
 
-  await step('Drive proposé : carte mise en avant, sauvegarde envoie le coffre chiffré', async () => {
+  await step('Drive proposé : carte mise en avant, première synchro dépose le coffre chiffré', async () => {
     assert.equal(await page.isVisible('#drive-card.is-suggested'), true);
     await page.click('#btn-drive-backup');
     await toast.filter({ hasText: 'Google Drive' }).waitFor();
@@ -153,7 +153,7 @@ try {
     // un client d'avant (v: 1 exigée) refuse de l'ouvrir, donc d'écrire.
     assert.equal(JSON.parse(driveFile.content).v, 2);
     assert.ok(driveCalls.every((c) => c.auth === 'Bearer jeton'));
-    assert.match(await page.textContent('#drive-status'), /Dernière sauvegarde/);
+    assert.match(await page.textContent('#drive-status'), /Dernière synchro/);
   });
 
   await step('verrouillage : écran de verrouillage, codes effacés', async () => {
@@ -228,7 +228,7 @@ try {
     await page.goto(`${BASE}/#/activity`);
     const text = await page.textContent('#activity');
     assert.match(text, /Mot de passe maître activé/);
-    assert.match(text, /Sauvegarde envoyée sur Google Drive/);
+    // Les synchros Drive vont au journal de synchro de l'appareil, pas dans l'historique partagé.
   });
 
   await step('désactivation : données remises en clair, coffre supprimé', async () => {

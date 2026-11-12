@@ -13,6 +13,11 @@
   'use strict';
 
   const FILE_NAME = 'mymfa-vault.json';
+  // Espace caché réservé à l'application : invisible dans l'interface de Google Drive.
+  const FOLDER = 'appDataFolder';
+  // Ce que l'on demande à Drive sur le fichier : de quoi l'identifier et le décrire.
+  // headRevisionId : la version lue, revérifiée avant d'écrire (synchro v2).
+  const FIELDS = 'id,name,size,createdTime,modifiedTime,headRevisionId';
   const SCOPE = 'https://www.googleapis.com/auth/drive.appdata';
   const API = 'https://www.googleapis.com/drive/v3/files';
   const UPLOAD = 'https://www.googleapis.com/upload/drive/v3/files';
@@ -36,12 +41,12 @@
       return res;
     }
 
-    /** Dernière sauvegarde : { id, modifiedTime, size } ou null. */
+    /** Dernière sauvegarde : { id, name, size, createdTime, modifiedTime } ou null. */
     async function find() {
       const params = new URLSearchParams({
-        spaces: 'appDataFolder',
+        spaces: FOLDER,
         q: `name = '${FILE_NAME}' and trashed = false`,
-        fields: 'files(id,modifiedTime,size)',
+        fields: `files(${FIELDS})`,
         orderBy: 'modifiedTime desc',
         pageSize: '1',
       });
@@ -49,10 +54,12 @@
       return (data.files && data.files[0]) || null;
     }
 
-    async function upload(content) {
-      const existing = await find();
+    /** Envoie le coffre ; `existing` (résultat de find(), ou null) évite une
+     *  relecture quand l'appelant vient de vérifier la version. */
+    async function upload(content, existing) {
+      if (existing === undefined) existing = await find();
       if (existing) {
-        const res = await call(`${UPLOAD}/${existing.id}?uploadType=media&fields=id,modifiedTime,size`, {
+        const res = await call(`${UPLOAD}/${existing.id}?uploadType=media&fields=${FIELDS}`, {
           method: 'PATCH',
           headers: { 'Content-Type': 'application/json' },
           body: content,
@@ -60,11 +67,11 @@
         return res.json();
       }
       const boundary = `mymfa-${Math.random().toString(36).slice(2)}`;
-      const metadata = JSON.stringify({ name: FILE_NAME, parents: ['appDataFolder'], mimeType: 'application/json' });
+      const metadata = JSON.stringify({ name: FILE_NAME, parents: [FOLDER], mimeType: 'application/json' });
       const body =
         `--${boundary}\r\nContent-Type: application/json; charset=UTF-8\r\n\r\n${metadata}\r\n` +
         `--${boundary}\r\nContent-Type: application/json\r\n\r\n${content}\r\n--${boundary}--`;
-      const res = await call(`${UPLOAD}?uploadType=multipart&fields=id,modifiedTime,size`, {
+      const res = await call(`${UPLOAD}?uploadType=multipart&fields=${FIELDS}`, {
         method: 'POST',
         headers: { 'Content-Type': `multipart/related; boundary=${boundary}` },
         body,
@@ -72,11 +79,12 @@
       return res.json();
     }
 
-    async function download() {
-      const existing = await find();
+    async function download(existing) {
+      if (existing === undefined) existing = await find();
       if (!existing) throw new DriveError('driveEmpty');
       const res = await call(`${API}/${existing.id}?alt=media`);
-      return { content: await res.text(), modifiedTime: existing.modifiedTime };
+      // file : les métadonnées Drive du fichier lu (nom, taille, dates).
+      return { content: await res.text(), modifiedTime: existing.modifiedTime, file: existing };
     }
 
     return { find, upload, download };
@@ -137,8 +145,11 @@
       expiresAt = 0;
     }
 
-    return { getToken, signOut };
+    /** Un jeton valide est-il en mémoire (synchro possible sans fenêtre Google) ? */
+    const hasToken = () => Boolean(token && Date.now() < expiresAt - 60000);
+
+    return { getToken, signOut, hasToken };
   }
 
-  return { FILE_NAME, SCOPE, DriveError, createClient, googleTokenProvider };
+  return { FILE_NAME, FOLDER, SCOPE, DriveError, createClient, googleTokenProvider };
 });

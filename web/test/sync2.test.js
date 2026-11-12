@@ -487,3 +487,14 @@ test('etatPersistant : description posée, puis changée par decrire()', () => {
   temps.decrire(null);
   assert.ok(!('type' in temps.etat) && !('nom' in temps.etat));
 });
+
+test("rien de nouveau : l'activité n'est pas réécrite avant un jour, rien à envoyer", () => {
+  const etat = Sync2.nouvelEtat('pc', T0, { type: 'web' });
+  const premiere = Sync2.fusion(copie([compte('a', 'GitHub', '2026-11-11T14:00:00.000Z')]), {}, etat, T0).donnees;
+  const plusTard = Sync2.fusion(premiere, premiere, etat, T0 + 3 * 60 * MINUT);
+  assert.strictEqual(plusTard.rapport.aEnvoyer, false, 'trois heures après, sans nouveauté : rien à envoyer');
+  assert.strictEqual(registre(plusTard.donnees).pc.actifLe, T0);
+  const lendemain = Sync2.fusion(premiere, premiere, etat, T0 + Sync2.ACTIVITE_PAS_MS);
+  assert.strictEqual(lendemain.rapport.aEnvoyer, true, 'un jour après : activité rafraîchie');
+  assert.strictEqual(registre(lendemain.donnees).pc.actifLe, T0 + Sync2.ACTIVITE_PAS_MS);
+});

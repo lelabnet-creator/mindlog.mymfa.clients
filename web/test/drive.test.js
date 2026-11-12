@@ -25,6 +25,8 @@ test('find : recherche dans appDataFolder avec le jeton', async () => {
   assert.deepEqual(found, { id: 'f1', modifiedTime: 't' });
   const url = new URL(calls[0].url);
   assert.equal(url.searchParams.get('spaces'), 'appDataFolder');
+  // Nom, taille et dates : affichés dans la carte de sauvegarde.
+  assert.equal(url.searchParams.get('fields'), 'files(id,name,size,createdTime,modifiedTime,headRevisionId)');
   assert.match(url.searchParams.get('q'), /name = 'mymfa-vault\.json'/);
   assert.equal(calls[0].headers.Authorization, 'Bearer jeton-test');
 });
@@ -50,7 +52,11 @@ test('upload : mise à jour (PATCH) du fichier existant', async () => {
 
 test('download : contenu et date ; aucune sauvegarde → driveEmpty', async () => {
   const full = fakeDrive([{ id: 'f1', modifiedTime: '2026-10-30T20:00:00Z' }]);
-  assert.deepEqual(await Drive.createClient({ fetch: full.fetch, getToken }).download(), { content: '{"v":1}', modifiedTime: '2026-10-30T20:00:00Z' });
+  assert.deepEqual(await Drive.createClient({ fetch: full.fetch, getToken }).download(), {
+    content: '{"v":1}',
+    modifiedTime: '2026-10-30T20:00:00Z',
+    file: { id: 'f1', modifiedTime: '2026-10-30T20:00:00Z' },
+  });
   const empty = fakeDrive([]);
   await assert.rejects(Drive.createClient({ fetch: empty.fetch, getToken }).download(), { code: 'driveEmpty' });
 });

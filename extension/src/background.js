@@ -24,6 +24,7 @@ const K = {
   dirty: 'ext.dirty', // l'app n'a peut-être pas encore nos changements
   lastSync: 'ext.lastSync',
   driveLastSync: 'ext.driveLastSync',
+  driveFile: 'ext.driveFile', // métadonnées Drive du fichier (nom, taille, dates), pour l'app
   driveError: 'ext.driveError',
   dek: 'ext.dek', // session
   lastUse: 'ext.lastUse', // session
@@ -495,8 +496,7 @@ async function driveExchange(client) {
   if (!backup) {
     const vault = (await getSnapshot())[VAULT_KEY];
     if (!Vault.parse(vault)) throw new ExtError('driveEmpty');
-    await client.upload(vault);
-    return { uploaded: true };
+    return { uploaded: true, file: await client.upload(vault) };
   }
   if (!Vault.parse(backup.content)) throw new ExtError('invalidBackup');
 
@@ -511,12 +511,12 @@ async function driveExchange(client) {
     return { changed, upload: merged.writeBack ? merged.snap[VAULT_KEY] : null };
   });
   if (res.needsUnlock) return res;
-  if (res.upload) await client.upload(res.upload);
+  const file = res.upload ? await client.upload(res.upload) : backup.file;
   if (res.changed) {
     pushToApp();
     refreshIndex();
   }
-  return { changed: res.changed, uploaded: Boolean(res.upload) };
+  return { changed: res.changed, uploaded: Boolean(res.upload), file };
 }
 
 let driveRun = null;
@@ -530,9 +530,11 @@ function syncDrive(interactive) {
 async function runDriveSync(interactive) {
   const client = Drive.createClient({ fetch: (...args) => fetch(...args), getToken: () => driveToken(interactive) });
   try {
-    const res = await driveExchange(client);
+    const { file, ...res } = await driveExchange(client);
     await chrome.storage.local.set(
-      res.needsUnlock ? { [K.driveError]: 'locked' } : { [K.driveError]: null, [K.driveLastSync]: new Date().toISOString() }
+      res.needsUnlock
+        ? { [K.driveError]: 'locked' }
+        : { [K.driveError]: null, [K.driveLastSync]: new Date().toISOString(), ...(file ? { [K.driveFile]: file } : {}) }
     );
     if (interactive) await saveSettings({ drive: true });
     return res;
@@ -566,7 +568,7 @@ async function autoDrive() {
 async function disconnectDrive() {
   const { [K.driveToken]: saved } = await chrome.storage.session.get(K.driveToken);
   await chrome.storage.session.remove(K.driveToken);
-  await chrome.storage.local.remove([K.driveError, K.driveLastSync]);
+  await chrome.storage.local.remove([K.driveError, K.driveLastSync, K.driveFile]);
   await saveSettings({ drive: false });
   if (saved) fetch(`https://oauth2.googleapis.com/revoke?token=${encodeURIComponent(saved.token)}`, { method: 'POST' }).catch(() => {});
 }
@@ -1124,9 +1126,11 @@ const handlers = {
   },
   'app:settings': async () => {
     const settings = await getSettings();
-    const { [K.driveLastSync]: driveLastSync } = await chrome.storage.local.get(K.driveLastSync);
+    const { [K.driveLastSync]: driveLastSync, [K.driveFile]: driveFile } = await chrome.storage.local.get([K.driveLastSync, K.driveFile]);
     return {
       autoLock: settings.autoLock,
+      driveLinked: Boolean(settings.drive),
+      driveFile: driveFile || null,
       driveEvery: settings.driveEvery,
       driveNext: await nextDriveBackup(),
       driveLastSync: driveLastSync || null,
@@ -1157,6 +1161,14 @@ const handlers = {
     return {};
   },
   'app:driveToken': async ({ clientId }) => ({ token: await driveToken(true, clientId) }),
+  // Métadonnées du fichier de sauvegarde relues sur Drive, sans fenêtre Google (jeton silencieux).
+  'app:driveInfo': async () => {
+    const client = Drive.createClient({ fetch: (...args) => fetch(...args), getToken: () => driveToken(false) });
+    const file = await client.find();
+    if (file) await chrome.storage.local.set({ [K.driveFile]: file });
+    else await chrome.storage.local.remove(K.driveFile);
+    return { file };
+  },
 };
 
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {

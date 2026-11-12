@@ -199,6 +199,16 @@
     return JSON.parse(decoder.decode(await decrypt(dek, blob, AAD_DATA, 'corrupted')));
   }
 
+  /** Chiffre une valeur JSON avec la DEK sous une AAD propre (journal de synchro…) :
+   *  un tel blob ne peut pas passer pour les données du coffre, ni l'inverse. */
+  async function encryptJson(dek, value, aad) {
+    return encrypt(dek, encoder.encode(JSON.stringify(value)), aad);
+  }
+
+  async function decryptJson(dek, blob, aad) {
+    return JSON.parse(decoder.decode(await decrypt(dek, blob, aad, 'corrupted')));
+  }
+
   async function passwordEntry(dek, password, iterations) {
     const salt = randomBytes(16);
     const kek = await passwordKek(password, salt, iterations);
@@ -268,6 +278,8 @@
     removePasskey,
     encryptData,
     decryptData,
+    encryptJson,
+    decryptJson,
     passwordStrength,
     randomBytes,
     toB64,
