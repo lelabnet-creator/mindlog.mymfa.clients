@@ -55,6 +55,9 @@ pub struct Demon {
     /// points de restauration — verrou séparé du coffre (jamais tenu à travers
     /// un .await), demandes de cycle regroupées.
     pub synchro: Mutex<Synchro>,
+    /// Identifiant de cet appareil dans le registre v2 : noté dans l'historique de
+    /// chaque modification (SYN-09), sans prendre le verrou de synchro.
+    pub appareil: String,
     /// Un cycle de synchro est demandé (modification, ouverture, SyncNow).
     pub demande_synchro: tokio::sync::Notify,
 }
@@ -136,6 +139,7 @@ impl Demon {
     pub fn nouveau(chemins: Chemins) -> Partage {
         let trousseau = charger_trousseau(&chemins);
         let synchro = charger_synchro(&chemins);
+        let appareil = synchro.etat.as_ref().map(|e| e.appareil.clone()).unwrap_or_default();
         let (verrou, _) = watch::channel(true);
         let (contenu, _) = watch::channel(0);
         Arc::new(Demon {
@@ -153,6 +157,7 @@ impl Demon {
             compteur: AtomicU64::new(1),
             publies: Mutex::new(Vec::new()),
             synchro: Mutex::new(synchro),
+            appareil,
             demande_synchro: tokio::sync::Notify::new(),
         })
     }
@@ -210,7 +215,11 @@ impl Demon {
         let r = {
             let mut etat = self.etat();
             let c = etat.coffre.as_mut().ok_or(Refus::Verrouille)?;
-            let (r, texte) = c.modifier(f)?;
+            let appareil = (!self.appareil.is_empty()).then(|| self.appareil.clone());
+            let (r, texte) = c.modifier(move |store| {
+                store.appareil = appareil; // l'historique nomme cet appareil (SYN-09)
+                f(store)
+            })?;
             let Some(texte) = texte else { return Ok(r) };
             let chemin = self.chemins.coffre();
             chemins::ecrire_prive(&chemin, texte.as_bytes()).map_err(|e| Refus::Echec(format!("coffre non écrit : {e}")))?;
@@ -861,18 +870,41 @@ fn refus_drive(e: mymfa_core::AppError) -> Refus {
 
 /// Charge l'état de synchro persisté (identifiant d'appareil, horloge, repère,
 /// révision Drive vue). Rien de secret : fichier en clair.
+/// Nom lisible de ce poste pour le registre des appareils (SYN-09) : le nom
+/// d'hôte, rien de plus.
+fn nom_d_hote() -> Option<String> {
+    ["/proc/sys/kernel/hostname", "/etc/hostname"]
+        .iter()
+        .find_map(|chemin| std::fs::read_to_string(chemin).ok())
+        .map(|nom| nom.trim().to_string())
+        .filter(|nom| !nom.is_empty())
+}
+
 fn charger_synchro(chemins: &Chemins) -> Synchro {
     let brut = chemins::lire(&chemins.drive_etat()).unwrap_or_default();
     let relu = crate::synchro::etat_depuis_texte(&brut).ok().flatten();
-    match relu {
+    let mut s = match relu {
         Some((etat, sauvegarde)) => {
             let mut s = Synchro::neuf(&etat.appareil);
             s.etat = Some(etat);
             s.sauvegarde = sauvegarde;
             s
         }
-        None => Synchro::neuf(&format!("mymfa-{}", crate::drive::b64url(&mymfa_core::vault::random_bytes(6)))),
+        None => {
+            // Identifiant persisté dès sa création : un redémarrage avant le premier
+            // cycle ne doit pas faire naître un second appareil dans le registre.
+            let s = Synchro::neuf(&format!("mymfa-{}", crate::drive::b64url(&mymfa_core::vault::random_bytes(6))));
+            if let Some(etat) = &s.etat {
+                let _ = chemins::ecrire_prive(&chemins.drive_etat(), crate::synchro::etat_en_texte(etat, None).as_bytes());
+            }
+            s
+        }
+    };
+    // Description (non persistée : recalculée à chaque démarrage, le nom d'hôte peut changer).
+    if let Some(etat) = s.etat.take() {
+        s.etat = Some(etat.avec_description("linux", nom_d_hote()));
     }
+    s
 }
 
 #[cfg(test)]
@@ -900,6 +932,30 @@ mod tests {
         let r = Remise { iterations: RAPIDE, cle };
         let (uid, gid) = unsafe { (libc::geteuid(), libc::getegid()) };
         remise::deposer(&d.chemins.execution, uid, gid, FICHIER_CLE, &r.encoder()).unwrap();
+    }
+
+    /// SYN-09 : l'identifiant d'appareil est persisté dès la création (un redémarrage
+    /// avant le premier cycle garde le même), le démon se décrit « linux », et chaque
+    /// modification nomme l'appareil dans l'historique.
+    #[tokio::test]
+    async fn appareil_persiste_decrit_et_note_dans_l_historique() {
+        let d = demon("appareil");
+        assert!(d.appareil.starts_with("mymfa-"));
+        assert!(d.chemins.drive_etat().exists(), "identifiant écrit dès la création");
+        let relance = Demon::nouveau(Chemins { donnees: d.chemins.donnees.clone(), execution: d.chemins.execution.clone() });
+        assert_eq!(relance.appareil, d.appareil, "même appareil après un redémarrage");
+        let description = d.synchro().etat.as_ref().unwrap().description.clone().unwrap();
+        assert_eq!(description.type_, "linux");
+
+        d.deverrouiller(Zeroizing::new(MDP.into())).await.unwrap();
+        d.modifier(|store| {
+            store.add(&mymfa_core::store::NewAccount { issuer: "GitHub".into(), secret: "JBSWY3DPEHPK3PXP".into(), ..Default::default() }, None);
+            Ok::<(), ()>(())
+        })
+        .unwrap()
+        .unwrap();
+        let historique = d.lire(|c| c.store().history()).unwrap();
+        assert_eq!(historique[0].appareil.as_deref(), Some(d.appareil.as_str()));
     }
 
     #[tokio::test]

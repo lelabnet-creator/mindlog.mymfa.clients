@@ -36,7 +36,11 @@ https://claude.ai/artifact/Cq8EHnmZw48Yk7RciHfwjG
 - **Tableau de bord** (`#/dashboard` ; sur mobile, depuis Activité) : chiffres clés, usage sur
   30 jours, santé des mots de passe (hors politique, réutilisés, à renouveler, compromis),
   vérification des fuites et politique de mots de passe. Voir plus bas.
-- **Sauvegarde Google Drive** du coffre chiffré, et restauration.
+- **Synchronisation Google Drive** du coffre chiffré (synchro v2, fusion champ par champ),
+  et restauration.
+- **Espace Synchro** (`#/sync` ; sur mobile, depuis Activité) : appareils et types de
+  clients, chronologie des ajouts / modifications / suppressions avec leur source, journal
+  des synchros. Voir plus bas.
 - **i18n** : français et anglais, détection de la langue du navigateur, choix mémorisé.
 - Police Manrope hébergée localement (aucune requête vers un tiers).
 
@@ -246,12 +250,38 @@ sauvegarde Google Drive, chiffrée elle aussi.
 
 ## Sauvegarde Google Drive
 
-Réglages › Données › **Sauvegarder sur Google Drive** envoie le coffre **chiffré**
-(jamais de clair) dans le dossier caché `appDataFolder` du Drive : scope
-`drive.appdata`, l'app ne voit que ses propres fichiers. **Restaurer** remplace le
-coffre local puis verrouille : il faut le mot de passe de la sauvegarde. La sauvegarde
-nécessite le mot de passe maître. Tant que la sauvegarde n'a pas été déverrouillée
-avec succès, **Annuler la restauration** rétablit le coffre précédent.
+Le coffre **chiffré** (jamais de clair) vit dans le dossier caché `appDataFolder` du
+Drive, fichier `mymfa-vault.json` : scope `drive.appdata`, l'app ne voit que ses propres
+fichiers, et ce dossier n'apparaît pas dans l'interface de Google Drive.
+
+**Synchroniser** (Réglages › Synchronisation Google Drive, ou l'espace Synchro) conduit
+le cycle v2 (`js/drivesync.js`, le même que le démon Linux) : lire la copie Drive en
+notant sa version, l'ouvrir avec la clé du coffre, fusionner champ par champ
+(`js/sync2.js`), écrire en local, envoyer si la fusion apporte quelque chose après avoir
+revérifié que Drive n'a pas bougé (sinon relire et refusionner). Une copie d'un **autre
+coffre** (autre clé) n'est jamais fusionnée : **Restaurer** permet de l'adopter — elle
+remplace le coffre local puis verrouille, il faut son mot de passe ; tant qu'elle n'a pas
+été déverrouillée, **Annuler la restauration** rétablit le coffre précédent. Synchro
+automatique au déverrouillage et peu après chaque modification, seulement si Drive a déjà
+servi et qu'un jeton Google est en mémoire (jamais de fenêtre Google imprévue). Le tout
+nécessite le mot de passe maître.
+
+## Espace Synchro
+
+`#/sync` (`js/syncview.js`) montre :
+
+- **l'état** : dernière synchro, changements en attente, fichier Drive, heure de
+  référence (vérifiée par la réponse de Drive à un envoi, sinon horloge de l'appareil) ;
+- **les appareils** : le registre v2 du coffre — chaque client s'y décrit (`web`,
+  `extension`, `linux`, `android`, et un nom : « Chrome · Linux », le nom d'hôte…),
+  dernière activité connue, couverture, éléments dont il a fait la dernière
+  modification ;
+- **la chronologie** : l'historique (ajouts, modifications avec les champs, suppressions)
+  avec l'appareil source de chaque entrée, filtrable ;
+- **le journal de synchro** : chaque cycle de cet appareil (et de l'arrière-plan de
+  l'extension) — reçus et envoyés avec leur auteur et leur date, conflits (valeur gardée
+  et écartée), doublons, horloges suspectes. Chiffré par la clé du coffre, jamais
+  synchronisé ; mots de passe, clés et notes n'y sont jamais écrits.
 
 Configuration (une fois) :
 

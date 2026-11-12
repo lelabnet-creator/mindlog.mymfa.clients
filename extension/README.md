@@ -177,13 +177,20 @@ coffre chiffré et ses sauvegardes Drive).
 
 ## Sauvegarde et synchronisation par Drive
 
-L'extension sauvegarde par le fichier Google Drive de l'app
+L'extension se synchronise par le fichier Google Drive de l'app
 ([`../web/README.md`](../web/README.md#sauvegarde-google-drive)), sans que l'app soit ouverte :
-Réglages de l'extension › Sauvegarde Google Drive › **Sauvegarder maintenant**. Elle récupère
-la sauvegarde, la fusionne avec ses comptes (mêmes règles que la synchronisation avec
-l'app) et renvoie le résultat sur Drive s'il apporte quelque chose. Drive vide : elle
-y dépose son propre coffre, s'il est chiffré — jamais de données en clair. Verrouillée,
-elle ne fusionne rien : elle demande le mot de passe de la sauvegarde.
+Réglages de l'extension › Sauvegarde Google Drive › **Sauvegarder maintenant**. Elle conduit le
+même cycle v2 que l'app (`js/drivesync.js`) : lecture, fusion champ par champ, revérification
+de la version Drive, envoi s'il apporte quelque chose, journal chiffré (lu par l'espace Synchro
+de l'app embarquée, `app:syncJournal`). Drive vide : elle y dépose son propre coffre, s'il est
+chiffré — jamais de données en clair. Verrouillée, elle ne fusionne rien : elle demande le
+mot de passe. L'app embarquée lui délègue sa synchro (`app:driveSync`) : l'arrière-plan est
+le seul écrivain Drive de l'extension.
+
+Synchro v2 (EXT-12) : toutes les fusions de l'extension (avec l'app, avec Drive, données en
+attente) passent par `Sync2.fusion` ; ses écritures sont tamponnées par l'horloge hybride de
+son propre appareil (`ext.temps`, chrome.storage.local) ; le marqueur v2 voyage avec les
+données ; un élément supprimé reste dans la copie avec sa trace mais n'est jamais servi.
 
 **Sauvegarde automatique** (`driveEvery`) : désactivée, toutes les heures, 6 h, 12 h, tous
 les jours (défaut), 3 jours, 7 jours — réglée dans le popup ou dans l'app embarquée. Après
