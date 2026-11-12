@@ -76,6 +76,7 @@ const extStatus = async () => (await popupData()).status;
 
 // API Google Drive simulée ; le jeton, lui, est celui que chrome.identity aurait laissé en session.
 let driveFile = null;
+const archives = []; // archives Drive (sauvegardes figées)
 const driveCalls = [];
 const cors = { 'access-control-allow-origin': '*', 'access-control-allow-headers': '*', 'access-control-allow-methods': '*' };
 await context.route('https://www.googleapis.com/**', async (route) => {
@@ -85,14 +86,34 @@ await context.route('https://www.googleapis.com/**', async (route) => {
   driveCalls.push({ method: req.method(), url, auth: req.headers().authorization });
   const json = (body) => route.fulfill({ status: 200, headers: cors, contentType: 'application/json', body: JSON.stringify(body) });
   if (url.includes('/upload/') && req.method() === 'POST') {
-    driveFile = { id: 'f1', modifiedTime: new Date().toISOString(), content: req.postData().split('\r\n\r\n')[2].split('\r\n--')[0] };
+    const parts = req.postData().split('\r\n\r\n');
+    const meta = JSON.parse(parts[1].split('\r\n--')[0]);
+    const content = parts[2].split('\r\n--')[0];
+    // Archive (mymfa-backup-…) : un fichier à part, jamais confondu avec la copie de synchro.
+    if (meta.name.startsWith('mymfa-backup-')) {
+      const archive = { id: `a${archives.length + 1}`, name: meta.name, size: String(content.length), createdTime: new Date().toISOString(), appProperties: meta.appProperties, content };
+      archives.unshift(archive);
+      const { content: _, ...sansContenu } = archive;
+      return json(sansContenu);
+    }
+    driveFile = { id: 'f1', modifiedTime: new Date().toISOString(), content };
     return json({ id: 'f1', modifiedTime: driveFile.modifiedTime });
   }
   if (url.includes('/upload/') && req.method() === 'PATCH') {
     driveFile = { ...driveFile, modifiedTime: new Date().toISOString(), content: req.postData() }; // comme Google : l'heure de l'écriture
     return json({ id: 'f1', modifiedTime: driveFile.modifiedTime });
   }
-  if (url.includes('alt=media')) return route.fulfill({ status: 200, headers: cors, contentType: 'application/json', body: driveFile.content });
+  if (req.method() === 'DELETE') {
+    archives.splice(archives.findIndex((a) => url.includes(`/files/${a.id}`)), 1);
+    return route.fulfill({ status: 204, headers: cors });
+  }
+  if (url.includes('alt=media')) {
+    const archive = archives.find((a) => url.includes(`/files/${a.id}?`));
+    return route.fulfill({ status: 200, headers: cors, contentType: 'application/json', body: archive ? archive.content : driveFile.content });
+  }
+  if ((new URL(url).searchParams.get('q') || '').includes("name contains 'mymfa-backup-'")) {
+    return json({ files: archives.map(({ content, ...f }) => f) });
+  }
   return json({ files: driveFile ? [{ id: driveFile.id, modifiedTime: driveFile.modifiedTime }] : [] });
 });
 
@@ -247,6 +268,10 @@ try {
     assert.match(await journal.textContent(), /Extension/);
     assert.match(await app.textContent('#sync-devices'), /Extension/);
     assert.match(await app.textContent('#sync-devices'), /Arrière-plan de cette extension/);
+    // L'arrière-plan a fait l'archive du jour (politique automatique) : listée, faite par l'extension.
+    assert.equal(archives.length, 1, 'une archive figée à côté de la copie de synchro');
+    assert.equal(archives[0].appProperties.source, 'extension');
+    await app.locator('#sync-archives', { hasText: 'mymfa-backup-' }).waitFor();
     await app.goto(`${APP}#/settings`);
   });
 

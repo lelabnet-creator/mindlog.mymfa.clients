@@ -67,3 +67,29 @@ test('erreurs HTTP : 401 → driveAuth, 500 → driveHttp', async () => {
   const fetch500 = async () => ({ ok: false, status: 500 });
   await assert.rejects(Drive.createClient({ fetch: fetch500, getToken }).find(), { code: 'driveHttp', params: { status: 500 } });
 });
+
+test('archives : nom horodaté, création multipart à part, liste filtrée, lecture et suppression par id', async () => {
+  const calls = [];
+  const fetch = async (url, options = {}) => {
+    calls.push({ url, method: options.method || 'GET', body: options.body });
+    const json = (b) => ({ ok: true, status: 200, json: async () => b, text: async () => JSON.stringify(b) });
+    if (url.includes('/upload/')) return json({ id: 'a1', name: 'mymfa-backup-x.json' });
+    if (url.includes('alt=media')) return { ok: true, status: 200, text: async () => '{"v":2}' };
+    if (options.method === 'DELETE') return { ok: true, status: 204 };
+    return json({ files: [{ id: 'a1', name: 'mymfa-backup-x.json' }, { id: 'z', name: 'autre.json' }] });
+  };
+  const client = Drive.createClient({ fetch, getToken });
+  assert.equal(Drive.archiveName(new Date('2026-11-12T08:05:11.123Z')), 'mymfa-backup-2026-11-12T08-05-11Z.json');
+  await client.createArchive('{"v":2}', { appareil: 'pc' }, new Date('2026-11-12T08:05:11Z'));
+  const post = calls.find((c) => c.method === 'POST');
+  assert.match(post.url, /uploadType=multipart/);
+  assert.match(post.body, /"name":"mymfa-backup-2026-11-12T08-05-11Z.json"/);
+  assert.match(post.body, /"appProperties":\{"appareil":"pc"\}/);
+  assert.ok(!calls.some((c) => c.method === 'PATCH'), 'une archive n’est jamais réécrite');
+  assert.deepEqual((await client.listArchives()).map((f) => f.id), ['a1']);
+  const liste = new URL(calls.at(-1).url);
+  assert.match(liste.searchParams.get('q'), /name contains 'mymfa-backup-'/);
+  assert.equal(await client.read('a1'), '{"v":2}');
+  await client.remove('a1');
+  assert.equal(calls.at(-1).method, 'DELETE');
+});

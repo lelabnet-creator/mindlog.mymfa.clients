@@ -51,6 +51,7 @@ await cdp.send('WebAuthn.addVirtualAuthenticator', {
 
 // Google : script de connexion et API Drive simulés (l'identifiant client est collé dans les réglages).
 let driveFile = null;
+const archives = []; // archives Drive (sauvegardes figées)
 const driveCalls = [];
 // Configuration de déploiement neutralisée : le scénario part d'un Drive non configuré.
 await page.route('**/js/config.js', (route) =>
@@ -72,14 +73,34 @@ await page.route('https://www.googleapis.com/**', async (route) => {
   driveCalls.push({ method: req.method(), url, auth: req.headers().authorization });
   const json = (body) => route.fulfill({ status: 200, headers: cors, contentType: 'application/json', body: JSON.stringify(body) });
   if (url.includes('/upload/') && req.method() === 'POST') {
-    driveFile = { id: 'f1', modifiedTime: new Date().toISOString(), content: req.postData().split('\r\n\r\n')[2].split('\r\n--')[0] };
+    const parts = req.postData().split('\r\n\r\n');
+    const meta = JSON.parse(parts[1].split('\r\n--')[0]);
+    const content = parts[2].split('\r\n--')[0];
+    // Archive (mymfa-backup-…) : un fichier à part, jamais confondu avec la copie de synchro.
+    if (meta.name.startsWith('mymfa-backup-')) {
+      const archive = { id: `a${archives.length + 1}`, name: meta.name, size: String(content.length), createdTime: new Date().toISOString(), appProperties: meta.appProperties, content };
+      archives.unshift(archive);
+      const { content: _, ...sansContenu } = archive;
+      return json(sansContenu);
+    }
+    driveFile = { id: 'f1', modifiedTime: new Date().toISOString(), content };
     return json({ id: 'f1', modifiedTime: driveFile.modifiedTime });
   }
   if (url.includes('/upload/') && req.method() === 'PATCH') {
     driveFile = { ...driveFile, modifiedTime: new Date().toISOString(), content: req.postData() }; // comme Google : l'heure de l'écriture
     return json({ id: 'f1', modifiedTime: driveFile.modifiedTime });
   }
-  if (url.includes('alt=media')) return route.fulfill({ status: 200, headers: cors, contentType: 'application/json', body: driveFile.content });
+  if (req.method() === 'DELETE') {
+    archives.splice(archives.findIndex((a) => url.includes(`/files/${a.id}`)), 1);
+    return route.fulfill({ status: 204, headers: cors });
+  }
+  if (url.includes('alt=media')) {
+    const archive = archives.find((a) => url.includes(`/files/${a.id}?`));
+    return route.fulfill({ status: 200, headers: cors, contentType: 'application/json', body: archive ? archive.content : driveFile.content });
+  }
+  if ((new URL(url).searchParams.get('q') || '').includes("name contains 'mymfa-backup-'")) {
+    return json({ files: archives.map(({ content, ...f }) => f) });
+  }
   return json({ files: driveFile ? [{ id: driveFile.id, modifiedTime: driveFile.modifiedTime }] : [] });
 });
 
@@ -176,7 +197,26 @@ try {
     // Filtre par action : aucune suppression.
     await page.click('#sync .chip:text-is("Suppression")');
     await page.locator('#sync .sync-empty', { hasText: 'Aucun changement' }).waitFor();
-    await page.goto(`${BASE}/#/settings`);
+  });
+
+  await step('archives : une copie figée à côté de la synchro, à la demande, restaurable', async () => {
+    // La première synchro a fait l'archive du jour.
+    assert.equal(archives.length, 1, 'archive quotidienne faite avec la première synchro');
+    const figee = archives[0].content;
+    assert.ok(!figee.includes(SECRET), 'archive chiffrée');
+    await page.locator('#sync-archives', { hasText: 'mymfa-backup-' }).waitFor();
+    await page.click('#btn-sync-archive');
+    await toast.filter({ hasText: 'archivée' }).waitFor();
+    assert.equal(archives.length, 2, 'archive à la demande');
+    assert.equal(archives[1].content, figee, 'la première archive n’a pas été modifiée');
+    assert.notEqual(driveFile.content, undefined, 'la copie de synchro reste à part');
+    await page.locator('#sync-archives li').nth(1).waitFor();
+    // Restaurer une archive : la confirmation des réglages, annulable.
+    await page.locator('#sync-archives .sync-restore').last().click();
+    await page.locator('#drive-confirm-text', { hasText: 'l’archive du' }).waitFor();
+    await page.click('#btn-drive-cancel');
+    assert.equal(await page.isVisible('#drive-confirm'), false);
+    assert.match(await page.textContent('#drive-archives'), /Dernière archive/);
   });
 
   await step('verrouillage : écran de verrouillage, codes effacés', async () => {

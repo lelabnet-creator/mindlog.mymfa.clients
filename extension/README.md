@@ -185,7 +185,12 @@ de la version Drive, envoi s'il apporte quelque chose, journal chiffré (lu par 
 de l'app embarquée, `app:syncJournal`). Drive vide : elle y dépose son propre coffre, s'il est
 chiffré — jamais de données en clair. Verrouillée, elle ne fusionne rien : elle demande le
 mot de passe. L'app embarquée lui délègue sa synchro (`app:driveSync`) : l'arrière-plan est
-le seul écrivain Drive de l'extension.
+le seul écrivain de la copie de synchro de l'extension.
+
+**Archives** : en plus de la synchro, l'extension dépose une copie figée du coffre
+(`mymfa-backup-<date>.json`, jamais modifiée ensuite) selon sa politique automatique, et à
+chaque **Sauvegarder maintenant** ; les 30 plus récentes sont gardées. Voir
+[`../web/README.md`](../web/README.md#sauvegarde-google-drive).
 
 Synchro v2 (EXT-12) : toutes les fusions de l'extension (avec l'app, avec Drive, données en
 attente) passent par `Sync2.fusion` ; ses écritures sont tamponnées par l'horloge hybride de

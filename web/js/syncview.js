@@ -6,6 +6,8 @@
  *    couverture, nombre d'éléments dont l'appareil a fait la dernière modification.
  *  - Chronologie : l'historique (ajouts, modifications, suppressions) avec l'appareil source,
  *    filtrable par action, type d'élément, appareil et période.
+ *  - Archives : les sauvegardes figées (mymfa-backup-<date>.json), jamais modifiées par la
+ *    synchro — date, taille, appareil qui l'a faite ; restaurer, archiver maintenant.
  *  - Journal : les cycles de synchro de cet appareil (et de l'arrière-plan de l'extension) —
  *    changements reçus et envoyés avec leur auteur, conflits, doublons, horloges suspectes.
  * Rien n'est lu hors du coffre ouvert ; les valeurs sensibles des conflits ne sont jamais
@@ -24,7 +26,7 @@
   const JOURNAL_VISIBLE = 30;
 
   let ctx = null;
-  const state = { action: '', kind: '', appareil: '', periode: '30', journal: null, appareilHote: null, plus: false, enCours: false };
+  const state = { action: '', kind: '', appareil: '', periode: '30', journal: null, appareilHote: null, plus: false, enCours: false, archives: null, archivage: false, erreurArchives: null };
 
   /* ───── Utilitaires DOM ───── */
 
@@ -65,6 +67,7 @@
     update: 'M4 20h4L18.5 9.5a2.1 2.1 0 0 0-4-4L4 16v4z',
     delete: 'M4 7h16M6 7l1 13h10l1-13M9 7V4h6v3',
     sync: ['M20 11a8 8 0 0 0-14.9-3.5M4 4v4h4', 'M4 13a8 8 0 0 0 14.9 3.5M20 20v-4h-4'],
+    archive: ['M3 4h18v4H3z', 'M5 8v11a1 1 0 0 0 1 1h12a1 1 0 0 0 1-1V8', 'M10 12h4'],
     conflict: 'M12 9v4M12 17h.01M10.3 3.9 2.4 17.5A2 2 0 0 0 4.1 20.5h15.8a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0z',
   };
 
@@ -213,6 +216,87 @@
         h('dl', { class: 'sync-dl' }, details),
       ]),
     ]);
+  }
+
+  function taille(octets) {
+    const n = Number(octets);
+    if (!Number.isFinite(n)) return '';
+    return new Intl.NumberFormat(I18n.getLocale(), { style: 'unit', unit: n < 1048576 ? 'kilobyte' : 'megabyte', unitDisplay: 'short', maximumFractionDigits: 1 }).format(n < 1048576 ? n / 1024 : n / 1048576);
+  }
+
+  function sectionArchives(donnees) {
+    const drive = ctx.etatDrive();
+    if (!drive.configure || Lock.status() !== 'unlocked') return null;
+    const appareils = registre(donnees);
+    let contenu;
+    if (state.erreurArchives) contenu = h('p', { class: 'panel panel-hint sync-empty', text: state.erreurArchives });
+    else if (state.archives === null) contenu = h('p', { class: 'panel panel-hint sync-empty', text: t('sync.archives.loading') });
+    else if (!state.archives.length) contenu = h('p', { class: 'panel panel-hint sync-empty', text: t('sync.archives.empty') });
+    else {
+      contenu = h(
+        'ol',
+        { class: 'panel activity-list', id: 'sync-archives' },
+        state.archives.map((f) => {
+          const auteur = f.appProperties && f.appProperties.appareil;
+          return h('li', { class: 'sync-device' }, [
+            h('span', { class: 'activity-icon kind-copy' }, [icon(ICONS.archive)]),
+            h('div', { class: 'activity-body' }, [
+              h('div', { class: 'activity-top' }, [h('span', { class: 'activity-subject sync-device-name', text: dateHeure(f.createdTime) })]),
+              h('span', { class: 'activity-detail', text: [taille(f.size), auteur ? libelleAppareil(auteur, appareils) : null].filter(Boolean).join(' · ') }),
+              h('span', { class: 'activity-detail sync-id', text: f.name }),
+            ]),
+            h('button', {
+              type: 'button',
+              class: 'btn btn-ghost sync-restore',
+              text: t('sync.archives.restore'),
+              onclick: () => ctx.restaurerArchive(f).catch((err) => ctx.toast(ctx.errorMessage(err))),
+            }),
+          ]);
+        })
+      );
+    }
+    return h('section', { class: 'dash-section' }, [
+      h('div', { class: 'sync-section-head' }, [
+        h('h2', { class: 'section-label', text: t('sync.archives.title') }),
+        h('button', {
+          type: 'button',
+          class: `btn btn-ghost${state.archivage ? ' is-busy' : ''}`,
+          id: 'btn-sync-archive',
+          disabled: state.archivage,
+          text: t('sync.archives.now'),
+          onclick: archiver,
+        }),
+      ]),
+      h('p', { class: 'panel-hint sync-section-hint', text: t('sync.archives.hint', { count: DriveSync.ARCHIVES_GARDEES }) }),
+      contenu,
+    ]);
+  }
+
+  async function chargerArchives() {
+    if (!ctx.etatDrive().configure || Lock.status() !== 'unlocked') return;
+    try {
+      state.archives = await ctx.listerArchives();
+      state.erreurArchives = null;
+    } catch (err) {
+      state.erreurArchives = ctx.errorMessage(err);
+    }
+  }
+
+  async function archiver() {
+    if (state.archivage) return;
+    state.archivage = true;
+    render();
+    try {
+      const res = await ctx.archiver();
+      state.archives = res.archives;
+      ctx.toast(t('toast.archiveDone'));
+    } catch (err) {
+      ctx.toast(ctx.errorMessage(err));
+    } finally {
+      state.archivage = false;
+      await chargerJournal().catch(() => {});
+      render();
+    }
   }
 
   function sectionAppareils(donnees) {
@@ -381,6 +465,8 @@
     const erreur = e.resultat === 'erreur' || e.resultat === 'autreCoffre';
     const resume = erreur
       ? ctx.errorMessage({ code: e.code || 'driveOtherVault' })
+      : e.resultat === 'archive'
+      ? [e.archive && e.archive.name, e.supprimees ? t('sync.journal.pruned', { count: e.supprimees }) : null].filter(Boolean).join(' · ')
       : t('sync.journal.summary', { recus, envoyes }) + (conflits.length ? ` · ${t('sync.journal.conflicts', { count: conflits.length })}` : '');
     const detail = [];
     if ((e.recus || []).length) {
@@ -422,7 +508,7 @@
       );
     }
     const tete = [
-      h('span', { class: `activity-icon kind-${erreur ? 'delete' : recus + envoyes ? 'transfer' : 'copy'}` }, [icon(ICONS.sync)]),
+      h('span', { class: `activity-icon kind-${erreur ? 'delete' : recus + envoyes ? 'transfer' : 'copy'}` }, [icon(e.resultat === 'archive' ? ICONS.archive : ICONS.sync)]),
       h('div', { class: 'activity-body' }, [
         h('div', { class: 'activity-top' }, [
           h('span', { class: 'activity-subject', text: t(`sync.result.${e.resultat}`) }),
@@ -468,16 +554,16 @@
     const root = $('sync');
     if (!root || !ctx) return;
     const donnees = ctx.donnees();
-    root.replaceChildren(sectionEtat(donnees), sectionAppareils(donnees), sectionChronologie(donnees), sectionJournal(donnees));
+    root.replaceChildren(
+      ...[sectionEtat(donnees), sectionArchives(donnees), sectionAppareils(donnees), sectionChronologie(donnees), sectionJournal(donnees)].filter(Boolean)
+    );
   }
 
   /** Vue ouverte : rendu immédiat, puis journal (déchiffré) et rendu complet. */
   function show() {
     render();
     if (Lock.status() !== 'unlocked') return;
-    chargerJournal()
-      .then(render)
-      .catch(() => {});
+    Promise.all([chargerJournal().catch(() => {}), chargerArchives()]).then(render);
   }
 
   async function synchroniser() {
@@ -499,6 +585,8 @@
 
   function reset() {
     state.journal = null;
+    state.archives = null;
+    state.erreurArchives = null;
     state.appareilHote = null;
     state.plus = false;
     const root = $('sync');

@@ -919,6 +919,8 @@ dialog::backdrop { background: var(--backdrop); }
 .sync-empty { padding: 14px; }
 .sync-more { align-self: flex-start; margin-top: 8px; }
 .sync-section-hint { padding: 0 4px; }
+.sync-section-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 0 0 0 4px; }
+.sync-device .sync-restore { flex: none; align-self: center; }
 @media (max-width: 640px) {
   .sync-detail { padding-left: 14px; }
   .sync-state-action, .sync-state-action .btn { width: 100%; justify-content: center; }

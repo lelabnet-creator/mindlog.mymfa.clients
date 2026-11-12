@@ -1,5 +1,9 @@
 /*
- * Sauvegarde du coffre chiffré dans Google Drive (dossier caché appDataFolder).
+ * Coffre chiffré dans Google Drive (dossier caché appDataFolder) :
+ *  - mymfa-vault.json : la copie de synchronisation, réécrite à chaque synchro (v2) ;
+ *  - mymfa-backup-<date>.json : les archives — chacune écrite une fois, jamais modifiée
+ *    ensuite (ni la synchro ni rien d'autre n'y touche), restaurables une à une ; seule
+ *    la rétention (les plus anciennes au-delà d'un nombre gardé) en supprime.
  *  - Scope drive.appdata : l'app ne voit que ses propres fichiers, rien d'autre du Drive.
  *  - Seul l'enregistrement du coffre (déjà chiffré par le mot de passe maître) est envoyé.
  *  - createClient({ fetch, getToken }) est testable sans navigateur ;
@@ -22,6 +26,13 @@
   const API = 'https://www.googleapis.com/drive/v3/files';
   const UPLOAD = 'https://www.googleapis.com/upload/drive/v3/files';
   const GIS_SRC = 'https://accounts.google.com/gsi/client';
+  const ARCHIVE_PREFIX = 'mymfa-backup-';
+  const ARCHIVE_FIELDS = 'id,name,size,createdTime,modifiedTime,appProperties';
+
+  /** Nom d'archive horodaté, triable : mymfa-backup-2026-11-12T08-05-11Z.json */
+  function archiveName(date = new Date()) {
+    return `${ARCHIVE_PREFIX}${date.toISOString().replace(/\.\d{3}Z$/, 'Z').replace(/:/g, '-')}.json`;
+  }
 
   class DriveError extends Error {
     constructor(code, params) {
@@ -79,6 +90,48 @@
       return res.json();
     }
 
+    /** Création multipart d'un nouveau fichier dans appDataFolder. */
+    async function create(metadata, content, fields) {
+      const boundary = `mymfa-${Math.random().toString(36).slice(2)}`;
+      const meta = JSON.stringify({ ...metadata, parents: [FOLDER], mimeType: 'application/json' });
+      const body =
+        `--${boundary}\r\nContent-Type: application/json; charset=UTF-8\r\n\r\n${meta}\r\n` +
+        `--${boundary}\r\nContent-Type: application/json\r\n\r\n${content}\r\n--${boundary}--`;
+      const res = await call(`${UPLOAD}?uploadType=multipart&fields=${fields}`, {
+        method: 'POST',
+        headers: { 'Content-Type': `multipart/related; boundary=${boundary}` },
+        body,
+      });
+      return res.json();
+    }
+
+    /** Archives, la plus récente d'abord : { id, name, size, createdTime, appProperties }. */
+    async function listArchives() {
+      const params = new URLSearchParams({
+        spaces: FOLDER,
+        q: `name contains '${ARCHIVE_PREFIX}' and trashed = false`,
+        fields: `files(${ARCHIVE_FIELDS})`,
+        orderBy: 'createdTime desc',
+        pageSize: '200',
+      });
+      const data = await (await call(`${API}?${params}`)).json();
+      return (data.files || []).filter((f) => typeof f.name === 'string' && f.name.startsWith(ARCHIVE_PREFIX));
+    }
+
+    /** Nouvelle archive (jamais réécrite) ; `proprietes` : qui l'a faite (appProperties). */
+    async function createArchive(content, proprietes = {}, date = new Date()) {
+      return create({ name: archiveName(date), appProperties: proprietes }, content, ARCHIVE_FIELDS);
+    }
+
+    /** Contenu d'un fichier par son identifiant (une archive). */
+    async function read(id) {
+      return (await call(`${API}/${encodeURIComponent(id)}?alt=media`)).text();
+    }
+
+    async function remove(id) {
+      await call(`${API}/${encodeURIComponent(id)}`, { method: 'DELETE' });
+    }
+
     async function download(existing) {
       if (existing === undefined) existing = await find();
       if (!existing) throw new DriveError('driveEmpty');
@@ -87,7 +140,7 @@
       return { content: await res.text(), modifiedTime: existing.modifiedTime, file: existing };
     }
 
-    return { find, upload, download };
+    return { find, upload, download, listArchives, createArchive, read, remove };
   }
 
   /* ───── Google Identity Services (navigateur uniquement) ───── */
@@ -151,5 +204,5 @@
     return { getToken, signOut, hasToken };
   }
 
-  return { FILE_NAME, FOLDER, SCOPE, DriveError, createClient, googleTokenProvider };
+  return { FILE_NAME, FOLDER, ARCHIVE_PREFIX, archiveName, SCOPE, DriveError, createClient, googleTokenProvider };
 });

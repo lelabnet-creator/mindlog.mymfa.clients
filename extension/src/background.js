@@ -655,15 +655,41 @@ async function driveExchange(client) {
 let driveRun = null;
 
 /** Une synchronisation Drive à la fois. Réponse : { changed, uploaded, status } ou { needsUnlock, status }. */
-function syncDrive(interactive) {
-  if (!driveRun) driveRun = runDriveSync(interactive).finally(() => (driveRun = null));
+function syncDrive(interactive, options) {
+  if (!driveRun) driveRun = runDriveSync(interactive, options).finally(() => (driveRun = null));
   return driveRun;
 }
 
-async function runDriveSync(interactive) {
+/**
+ * Archive (sauvegarde figée, mymfa-backup-<date>.json) à côté de la copie de synchro : due
+ * selon la politique automatique (toutes les N heures ; à la demande seulement : une par
+ * jour), ou forcée par « Sauvegarder maintenant ». Jamais de clair : sans coffre, rien.
+ */
+async function archiverDrive(client, { force = false } = {}) {
+  const { temps, maintenant } = await chargerTemps();
+  const { driveEvery } = await getSettings();
+  return DriveSync.archiver({
+    client,
+    coffre: { exporter: async () => (await getSnapshot())[VAULT_KEY], ajouterJournal },
+    appareil: temps.appareil,
+    source: 'extension',
+    force,
+    intervalleMs: (driveEvery || 24) * 3600000,
+    maintenant,
+  });
+}
+
+async function runDriveSync(interactive, { archiver = false } = {}) {
   const client = Drive.createClient({ fetch: (...args) => fetch(...args), getToken: () => driveToken(interactive) });
   try {
     const res = await driveExchange(client);
+    if (!res.needsUnlock) {
+      try {
+        res.archive = (await archiverDrive(client, { force: archiver })).archive;
+      } catch (err) {
+        if (archiver) throw err; // demandée : l'échec se voit ; automatique : la synchro suffit
+      }
+    }
     const fichier = res.fichier || null;
     await chrome.storage.local.set(
       res.needsUnlock
@@ -1234,7 +1260,8 @@ const handlers = {
     const settings = await getSettings();
     return { settings: await saveSettings({ neverSave: settings.neverSave.filter((s) => s !== site) }) };
   },
-  'popup:driveSync': async () => syncDrive(true),
+  // « Sauvegarder maintenant » : synchro, puis une archive figée à côté.
+  'popup:driveSync': async () => syncDrive(true, { archiver: true }),
   'popup:driveDisconnect': async () => {
     await disconnectDrive();
     return popupList();

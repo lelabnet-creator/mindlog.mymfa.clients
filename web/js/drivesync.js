@@ -21,6 +21,8 @@
   'use strict';
 
   const TOURS_MAX = 3;
+  /** Archives gardées sur Drive : au-delà, les plus anciennes sont supprimées. */
+  const ARCHIVES_GARDEES = 30;
   const LISTE_MAX = 50; // éléments détaillés par sens et par cycle (les totaux restent exacts)
   /** Champs dont la valeur n'entre jamais dans le journal, même chiffré. */
   const SENSIBLES = new Set(['secret', 'password', 'privateKey', 'note', 'userHandle']);
@@ -239,5 +241,46 @@
     return { cycle };
   }
 
-  return { creer, changements, SyncError, SENSIBLES, TOURS_MAX };
+  const resumeArchive = (f) => (f ? { id: f.id, name: f.name, size: f.size, createdTime: f.createdTime } : null);
+
+  /**
+   * Archive (sauvegarde figée) : une copie du coffre chiffré dans un fichier à part,
+   * mymfa-backup-<date>.json — écrite une fois, jamais modifiée ensuite, restaurable.
+   * Rien n'est fait si la plus récente a moins de `intervalleMs` (sauf `force`). Au-delà
+   * de `garder` archives, les plus anciennes sont supprimées (jamais celle qui vient
+   * d'être écrite). Consignée dans le journal de l'appareil.
+   * Réponse : { archive (ou null), archives (après rétention), supprimees }.
+   */
+  async function archiver({ client, coffre, appareil, source = 'app', intervalleMs = 0, force = false, garder = ARCHIVES_GARDEES, maintenant = () => Date.now() }) {
+    const archives = await client.listArchives();
+    const derniere = archives[0];
+    if (!force && derniere && Date.parse(derniere.createdTime) > maintenant() - intervalleMs) {
+      return { archive: null, archives, supprimees: [] };
+    }
+    const contenu = await coffre.exporter();
+    if (!Vault.parse(contenu)) throw new SyncError('locked');
+    const archive = await client.createArchive(contenu, { appareil: appareil || '', source }, new Date(maintenant()));
+    const toutes = [archive, ...archives.filter((a) => a.id !== archive.id)];
+    const supprimees = [];
+    for (const vieille of toutes.slice(Math.max(1, garder))) {
+      await client.remove(vieille.id);
+      supprimees.push(vieille.name);
+    }
+    try {
+      await coffre.ajouterJournal({
+        id: identifiant(),
+        at: new Date(maintenant()).toISOString(),
+        source,
+        appareil,
+        resultat: 'archive',
+        archive: resumeArchive(archive),
+        supprimees: supprimees.length,
+      });
+    } catch {
+      /* journal indisponible : l'archive est faite quand même */
+    }
+    return { archive, archives: toutes.slice(0, Math.max(1, garder)), supprimees };
+  }
+
+  return { creer, archiver, changements, SyncError, SENSIBLES, TOURS_MAX, ARCHIVES_GARDEES };
 });

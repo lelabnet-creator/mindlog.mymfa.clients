@@ -266,6 +266,15 @@ automatique au déverrouillage et peu après chaque modification, seulement si D
 servi et qu'un jeton Google est en mémoire (jamais de fenêtre Google imprévue). Le tout
 nécessite le mot de passe maître.
 
+**Archives** — la sauvegarde, distincte de la synchro : `mymfa-backup-<date>.json`, dans
+le même dossier caché. Chacune est une copie du coffre chiffré **écrite une fois et jamais
+modifiée ensuite** (la synchro ne touche qu'à `mymfa-vault.json`). Une archive est faite
+au plus une fois par jour avec la synchro (l'extension : selon sa politique automatique),
+ou à la demande (**Archiver une copie**, ou l'espace Synchro). Les 30 plus récentes sont
+gardées, les plus anciennes supprimées. Chaque archive se restaure depuis l'espace Synchro
+(même confirmation et même annulation que la restauration ci-dessus) ; Drive enregistre
+quel appareil l'a faite (`appProperties`).
+
 ## Espace Synchro
 
 `#/sync` (`js/syncview.js`) montre :

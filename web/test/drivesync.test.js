@@ -208,3 +208,61 @@ test('changements : ignore les dernières utilisations', () => {
   store.touchAccount(c.id);
   assert.deepStrictEqual(DriveSync.changements(avant, map), []);
 });
+
+/* ─── Archives (sauvegardes figées) ─── */
+
+function fauxDriveArchives() {
+  const fichiers = [];
+  let n = 0;
+  return {
+    fichiers,
+    async listArchives() {
+      return [...fichiers].sort((a, b) => b.createdTime.localeCompare(a.createdTime));
+    },
+    async createArchive(content, appProperties, date) {
+      n += 1;
+      const f = { id: `a${n}`, name: `mymfa-backup-${n}.json`, size: String(content.length), createdTime: date.toISOString(), appProperties, content };
+      fichiers.push(f);
+      return f;
+    },
+    async remove(id) {
+      fichiers.splice(fichiers.findIndex((f) => f.id === id), 1);
+    },
+  };
+}
+
+test('archives : écrites à part, jamais réécrites, dues selon l’intervalle, rétention', async () => {
+  const drive = fauxDriveArchives();
+  const journal = [];
+  let contenu = JSON.stringify({ v: 2, password: { x: 1 }, passkeys: [], data: { iv: 'a', ct: 'v1' } });
+  const coffre = { exporter: async () => contenu, ajouterJournal: async (e) => journal.unshift(e) };
+  let t = T0;
+  const base = { client: drive, coffre, appareil: 'pc', maintenant: () => t, intervalleMs: 24 * 60 * MINUT, garder: 3 };
+
+  const premiere = await DriveSync.archiver(base);
+  assert.ok(premiere.archive, 'aucune archive : la première est faite');
+  assert.deepStrictEqual(drive.fichiers[0].appProperties, { appareil: 'pc', source: 'app' });
+  const figee = drive.fichiers[0].content;
+
+  t += 60 * MINUT;
+  contenu = JSON.stringify({ v: 2, password: { x: 1 }, passkeys: [], data: { iv: 'b', ct: 'v2' } });
+  assert.strictEqual((await DriveSync.archiver(base)).archive, null, 'moins d’un jour : pas due');
+  assert.ok((await DriveSync.archiver({ ...base, force: true })).archive, 'à la demande : faite');
+  assert.strictEqual(drive.fichiers[0].content, figee, 'la première archive n’a pas bougé');
+
+  for (let i = 0; i < 3; i++) {
+    t += 25 * 60 * MINUT;
+    await DriveSync.archiver(base);
+  }
+  assert.strictEqual(drive.fichiers.length, 3, 'rétention : trois gardées');
+  assert.ok(!drive.fichiers.some((f) => f.id === 'a1'), 'la plus ancienne est partie');
+  assert.strictEqual(journal[0].resultat, 'archive');
+  assert.strictEqual(journal[0].supprimees, 1);
+});
+
+test('archives : coffre en clair refusé (jamais de clair sur Drive)', async () => {
+  const drive = fauxDriveArchives();
+  const coffre = { exporter: async () => null, ajouterJournal: async () => {} };
+  await assert.rejects(DriveSync.archiver({ client: drive, coffre, appareil: 'pc', force: true }), { code: 'locked' });
+  assert.strictEqual(drive.fichiers.length, 0);
+});

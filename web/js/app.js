@@ -11,6 +11,9 @@
   const EXPIRING_SECONDS = 5;
   const THEME_KEY = 'mymfa.theme';
   const DRIVE_LAST_KEY = 'mymfa.driveLastBackup';
+  // Date de la dernière archive Drive (sauvegarde figée) connue ici ; une par jour au plus en automatique.
+  const DRIVE_ARCHIVE_KEY = 'mymfa.driveArchive';
+  const ARCHIVE_AUTO_MS = 24 * 60 * 60 * 1000;
   // Métadonnées Drive du fichier de sauvegarde (nom, taille, dates), vues lors du dernier échange.
   const DRIVE_FILE_KEY = 'mymfa.driveFile';
   const EXTENSION_SYNC_KEY = 'mymfa.extensionSync';
@@ -1327,11 +1330,55 @@
         }
       }
       writePref(DRIVE_LAST_KEY, new Date().toISOString());
+      // Archive quotidienne en plus de la synchro (l'arrière-plan de l'extension tient la sienne).
+      if (!HOST && archiveDue()) archiverMaintenant().catch(() => {});
       return entree;
     })().finally(() => {
       syncEnCours = null;
     });
     return syncEnCours;
+  }
+
+  /* Archives (sauvegardes figées) : mymfa-backup-<date>.json, à côté de la copie de synchro —
+   * écrites une fois, jamais modifiées, restaurables une à une (js/drivesync.js, archiver). */
+  let archivesConnues = null;
+
+  function archiveDue() {
+    const derniere = Date.parse(readPref(DRIVE_ARCHIVE_KEY) || '');
+    return !Number.isFinite(derniere) || Date.now() - derniere >= ARCHIVE_AUTO_MS;
+  }
+
+  async function archiverMaintenant({ force = false } = {}) {
+    if (Lock.status() !== 'unlocked') throw Object.assign(new Error('locked'), { code: 'locked' });
+    const res = await DriveSync.archiver({
+      client: drive(),
+      coffre: { exporter: Lock.exportVault, ajouterJournal: Lock.ajouterJournal },
+      appareil: Lock.temps.appareil,
+      source: HOST ? 'extension' : 'app',
+      force,
+      intervalleMs: ARCHIVE_AUTO_MS,
+      maintenant: () => Lock.heure.maintenant(),
+    });
+    archivesConnues = res.archives;
+    const derniere = res.archive || res.archives[0];
+    if (derniere) writePref(DRIVE_ARCHIVE_KEY, derniere.createdTime);
+    return res;
+  }
+
+  async function listerArchives() {
+    archivesConnues = await drive().listArchives();
+    if (archivesConnues[0]) writePref(DRIVE_ARCHIVE_KEY, archivesConnues[0].createdTime);
+    return archivesConnues;
+  }
+
+  /** Restaurer une archive : même confirmation que la copie de synchro (Réglages › Drive). */
+  async function preparerRestauration(fichier) {
+    const content = await drive().read(fichier.id);
+    if (!Vault.parse(content)) throw new Vault.VaultError('invalidBackup');
+    pendingRestore = { content, modifiedTime: fichier.createdTime, archive: fichier.name };
+    if (location.hash !== '#/settings') location.hash = '#/settings';
+    renderDrive();
+    requestAnimationFrame(() => $('drive-card').scrollIntoView({ block: 'center' }));
   }
 
   /** Données lisibles pour l'espace Synchro : la copie déchiffrée, ou les clés en clair. */
@@ -1467,8 +1514,14 @@
     $('btn-drive-edit').hidden = Boolean(DRIVE_DEPLOY_ID);
     $('drive-confirm').hidden = !pendingRestore;
     if (pendingRestore) {
-      $('drive-confirm-text').textContent = t('drive.confirmRestore', { date: dateTime(pendingRestore.modifiedTime) });
+      $('drive-confirm-text').textContent = pendingRestore.archive
+        ? t('drive.confirmRestoreArchive', { date: dateTime(pendingRestore.modifiedTime) })
+        : t('drive.confirmRestore', { date: dateTime(pendingRestore.modifiedTime) });
     }
+    $('btn-drive-archive').hidden = !encrypted;
+    const derniereArchive = readPref(DRIVE_ARCHIVE_KEY);
+    $('drive-archives').hidden = !(configured && encrypted && !setup);
+    $('drive-archives').textContent = derniereArchive ? t('drive.lastArchive', { date: dateTime(derniereArchive) }) : t('drive.noArchive');
     // Sauvegarde automatique : seulement dans l'extension (elle tourne sans l'app ouverte).
     $('drive-every-row').hidden = !(hostDrive && configured && encrypted && !setup);
     if (hostDrive) {
@@ -1575,6 +1628,12 @@
         pendingRestore = backup;
       })
     );
+    $('btn-drive-archive').addEventListener('click', (event) =>
+      busy(event.currentTarget, async () => {
+        await archiverMaintenant({ force: true });
+        toast(t('toast.archiveDone'));
+      })
+    );
     $('btn-drive-cancel').addEventListener('click', () => {
       pendingRestore = null;
       renderDrive();
@@ -1678,6 +1737,9 @@
       host: HOST,
       donnees: donneesSynchro,
       etatDrive,
+      listerArchives,
+      archiver: () => archiverMaintenant({ force: true }),
+      restaurerArchive: preparerRestauration,
     });
 
     el.banner.hidden = Boolean(window.crypto && window.crypto.subtle);
