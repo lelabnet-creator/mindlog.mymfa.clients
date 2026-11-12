@@ -109,6 +109,13 @@ pub struct HistoryEntry {
     pub label: Option<String>,
     pub tag: Option<String>,
     pub details: Option<Value>,
+    /// Appareil auteur (SYN-09) : la source affichée par l'espace Synchro.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub appareil: Option<String>,
+    /// Champs inconnus de ce client, gardés tels quels : réécrire l'historique
+    /// (chaque `log`) ne doit rien effacer de ce qu'un autre client y a mis.
+    #[serde(flatten)]
+    pub extra: serde_json::Map<String, Value>,
 }
 
 #[allow(non_snake_case)]
@@ -379,6 +386,8 @@ pub struct NewPasskey {
 #[derive(Debug, Clone, Default)]
 pub struct Store {
     pub data: DataMap,
+    /// Identifiant de l'appareil qui écrit (SYN-09), noté dans l'historique.
+    pub appareil: Option<String>,
 }
 
 /// Objet libellé du journal (web : l'argument `account` de `log`, tel que le
@@ -415,7 +424,7 @@ impl Store {
     }
 
     pub fn from_map(data: DataMap) -> Self {
-        Self { data }
+        Self { data, appareil: None }
     }
 
     fn read_array<T: serde::de::DeserializeOwned>(&self, key: &str) -> Vec<T> {
@@ -450,6 +459,8 @@ impl Store {
             label: label.as_ref().map(|l| describe(&l.issuer, &l.account)),
             tag: label.as_ref().map(|l| l.tag.clone()),
             details,
+            appareil: self.appareil.clone(),
+            extra: serde_json::Map::new(),
         };
         history.insert(0, entry);
         history.truncate(HISTORY_MAX);
@@ -1146,5 +1157,25 @@ mod tests {
         assert_eq!(host_of("https://www.exemple.fr/a"), "exemple.fr");
         assert_eq!(host_of("https://exemple.fr"), "exemple.fr");
         assert_eq!(host_of("n'importe quoi"), "");
+    }
+
+    #[test]
+    fn historique_note_l_appareil_et_garde_les_champs_inconnus() {
+        let mut store = Store::new();
+        store.data.insert(
+            HISTORY_KEY.into(),
+            serde_json::json!([{ "id": "h0", "at": "2026-11-11T14:00:00.000Z", "action": "create", "accountId": null,
+                "label": null, "tag": null, "details": null, "appareil": "tel", "futur": { "x": 1 } }]).to_string(),
+        );
+        store.appareil = Some("pc".into());
+        store.add(&NewAccount { issuer: "GitHub".into(), secret: "JBSWY3DPEHPK3PXP".into(), ..Default::default() }, None);
+        let brut: Vec<Value> = serde_json::from_str(&store.data[HISTORY_KEY]).unwrap();
+        assert_eq!(brut[0]["appareil"], "pc", "le nouvel événement nomme son appareil");
+        assert_eq!(brut[1]["appareil"], "tel", "l'appareil d'un autre client survit à la réécriture");
+        assert_eq!(brut[1]["futur"]["x"], 1, "un champ inconnu aussi");
+        let mut sans = Store::new();
+        sans.add(&NewAccount { issuer: "GitHub".into(), secret: "JBSWY3DPEHPK3PXP".into(), ..Default::default() }, None);
+        let brut: Vec<Value> = serde_json::from_str(&sans.data[HISTORY_KEY]).unwrap();
+        assert!(brut[0].get("appareil").is_none(), "appareil inconnu : champ absent, comme le web");
     }
 }

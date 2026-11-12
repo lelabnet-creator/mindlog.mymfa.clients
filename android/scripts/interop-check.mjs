@@ -75,6 +75,7 @@ for (const cas of sync2.cases) {
     appareil: cas.etat.appareil,
     horloge: new Sync2.Horloge(cas.etat.horloge.l),
     repere: cas.etat.repere ?? '',
+    ...(cas.etat.type ? { type: cas.etat.type, ...(cas.etat.nom ? { nom: cas.etat.nom } : {}) } : {}),
   };
   etat.horloge.c = cas.etat.horloge.c;
   const { donnees, rapport } = Sync2.fusion(cas.locale, cas.distante, etat, cas.maintenant);

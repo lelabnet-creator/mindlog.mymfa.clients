@@ -19,7 +19,9 @@
  *    `h` : { champ → tampon }, et `t` : tampon de suppression ;
  *  - la clé `mymfa.sync.v2` (marqueur) porte le registre des appareils, le vidage
  *    d'historique tamponné et les traces v1 encore sans élément à qui s'attacher ;
- *    sa présence signale un coffre v2 ;
+ *    sa présence signale un coffre v2. Chaque appareil du registre peut se décrire
+ *    (SYN-09) : `type` (web, extension, linux, android) et `nom` lisible — écrits
+ *    par l'appareil lui-même à chaque fusion, facultatifs (ancienne forme lue) ;
  *  - l'enveloppe du coffre passe à `v: 2` quand les données portent le marqueur :
  *    un ancien client (enveloppe v: 1 exigée) refuse de lire — donc d'écrire ;
  *  - état par appareil, jamais synchronisé : identifiant, horloge (l, c), repère
@@ -264,10 +266,10 @@
     const appareils = {};
     if (objet.appareils && typeof objet.appareils === 'object' && !Array.isArray(objet.appareils)) {
       for (const [k, v] of Object.entries(objet.appareils)) {
-        // Forme riche { vu, actifLe } ; une chaîne simple (ancienne forme) vaut
-        // couverture seule, activité inconnue (0).
+        // Forme riche { vu, actifLe, type?, nom? } ; une chaîne simple (ancienne
+        // forme) vaut couverture seule, activité inconnue (0).
         if (v && typeof v === 'object' && !Array.isArray(v) && typeof v.vu === 'string') {
-          appareils[k] = { vu: v.vu, actifLe: Number.isFinite(v.actifLe) ? v.actifLe : 0 };
+          appareils[k] = { vu: v.vu, actifLe: Number.isFinite(v.actifLe) ? v.actifLe : 0, ...lireDescription(v) };
         } else if (typeof v === 'string') {
           appareils[k] = { vu: v, actifLe: 0 };
         }
@@ -280,10 +282,29 @@
     };
   }
 
+  /** Description d'un appareil (SYN-09) : `type` non vide, et `nom` s'il y en a
+   * un. Sans type, pas de description (le nom seul ne se garde pas). */
+  function lireDescription(v) {
+    if (!v || typeof v.type !== 'string' || !v.type) return {};
+    return typeof v.nom === 'string' && v.nom ? { type: v.type, nom: v.nom } : { type: v.type };
+  }
+
+  /** De deux entrées du registre pour le même appareil, celle dont la description
+   * fait foi : celle qui en a une ; sinon la plus grande (actifLe, type, nom) —
+   * la plus récente activité, puis un ordre total, pour que les deux côtés d'une
+   * fusion choisissent la même. */
+  function descriptionGagnante(a, b) {
+    if (!b.type) return lireDescription(a);
+    if (!a.type) return lireDescription(b);
+    if (a.actifLe !== b.actifLe) return lireDescription(a.actifLe > b.actifLe ? a : b);
+    if (a.type !== b.type) return lireDescription(a.type > b.type ? a : b);
+    return lireDescription((a.nom || '') >= (b.nom || '') ? a : b);
+  }
+
   function ecrireMarqueur(map, marqueur) {
     const appareils = {};
     for (const [a, vu] of Object.entries(marqueur.appareils)) {
-      appareils[a] = { vu: vu.vu, actifLe: vu.actifLe };
+      appareils[a] = { vu: vu.vu, actifLe: vu.actifLe, ...lireDescription(vu) };
     }
     const objet = { sync: 'v2', appareils, historiqueVideLe: marqueur.historiqueVideLe };
     if (Object.keys(marqueur.v1).length) objet.v1 = marqueur.v1;
@@ -294,8 +315,8 @@
 
   /** Identifiant, horloge et repère de dernière synchro d'un appareil. À
    * persister localement (hors des données) et à repasser à chaque fusion. */
-  function nouvelEtat(appareil, maintenant) {
-    return { appareil, horloge: new Horloge(maintenant), repere: '' };
+  function nouvelEtat(appareil, maintenant, description = null) {
+    return { appareil, horloge: new Horloge(maintenant), repere: '', ...lireDescription(description) };
   }
 
   // État d'appareil jamais synchronisé : identifiant et horloge vivent hors des
@@ -312,9 +333,10 @@
    *             tampon: (plancher?: string) => string, persister: () => void }}
    * `tampon(plancher)` donne un tampon pour une modification locale (toujours
    * plus grand que le plancher) ; après une fusion, l'état ayant été muté,
-   * appeler `persister()`.
+   * appeler `persister()`. `description` ({ type, nom }) : ce que l'appareil
+   * écrit de lui-même dans le registre (SYN-09) ; `decrire()` la change.
    */
-  function etatPersistant(stockage, T = () => Date.now()) {
+  function etatPersistant(stockage, T = () => Date.now(), description = null) {
     let appareil = stockage.getItem(APPAREIL_KEY);
     if (!appareil || !/^[0-9a-z]{6,32}$/.test(appareil)) {
       const octets = new Uint8Array(4);
@@ -326,7 +348,7 @@
         /* stockage indisponible : identifiant volatil */
       }
     }
-    let etat = nouvelEtat(appareil, T());
+    let etat = nouvelEtat(appareil, T(), description);
     try {
       const sauvegarde = JSON.parse(stockage.getItem(HORLOGE_KEY) || 'null');
       if (sauvegarde && Number.isFinite(sauvegarde.l) && sauvegarde.l > 0) {
@@ -358,6 +380,11 @@
         return t;
       },
       persister,
+      decrire: (nouvelle) => {
+        delete etat.type;
+        delete etat.nom;
+        Object.assign(etat, lireDescription(nouvelle));
+      },
     };
   }
 
@@ -832,8 +859,10 @@
     etat.repere = repere;
     // L'appareil publie son repère (les traces qu'il a vues pourront être
     // effacées) et son activité fraîche : il ne se fera pas retirer du registre
-    // tant qu'il se synchronise.
-    marqueur.appareils[etat.appareil] = { vu: etat.repere, actifLe: maintenant };
+    // tant qu'il se synchronise. Il se décrit s'il sait le faire (SYN-09), sinon
+    // garde la description reçue.
+    const description = etat.type ? lireDescription(etat) : lireDescription(marqueur.appareils[etat.appareil]);
+    marqueur.appareils[etat.appareil] = { vu: etat.repere, actifLe: maintenant, ...description };
     ecrireMarqueur(resultat, marqueur);
 
     rapport.aEnvoyer = differentDe(resultat, distant);
@@ -847,10 +876,15 @@
   function fusionnerMarqueurs(a, b, maintenant, rapport) {
     const appareils = {};
     const poser = (id, vu) => {
-      if (!appareils[id]) appareils[id] = { vu: vu.vu, actifLe: vu.actifLe };
+      if (!appareils[id]) appareils[id] = { vu: vu.vu, actifLe: vu.actifLe, ...lireDescription(vu) };
       else {
-        appareils[id].vu = tamponMax(appareils[id].vu, vu.vu);
-        appareils[id].actifLe = Math.max(appareils[id].actifLe, vu.actifLe);
+        // La description se choisit sur les entrées d'origine, avant le max d'actifLe.
+        const description = descriptionGagnante(appareils[id], vu);
+        appareils[id] = {
+          vu: tamponMax(appareils[id].vu, vu.vu),
+          actifLe: Math.max(appareils[id].actifLe, vu.actifLe),
+          ...description,
+        };
       }
     };
     for (const [id, vu] of Object.entries(a.appareils)) poser(id, vu);

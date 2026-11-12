@@ -152,3 +152,13 @@ test('sans temps (mode v1) : aucun tampon, suppression avec enterrement', () => 
   const supprimes = JSON.parse(storage.getItem('mymfa.deleted.v1'));
   assert.ok(supprimes.accounts[compte.id], 'enterrement v1');
 });
+
+test('historique : chaque entrée nomme l’appareil auteur quand il est connu (SYN-09)', () => {
+  const temps = { ...tempsFactice(), appareil: 'pc' };
+  const store = createStore(stockageMemoire(), temps);
+  store.add({ issuer: 'GitHub', secret: 'JBSWY3DPEHPK3PXP' });
+  assert.strictEqual(store.history()[0].appareil, 'pc');
+  const sansAppareil = createStore(stockageMemoire(), tempsFactice());
+  sansAppareil.add({ issuer: 'GitHub', secret: 'JBSWY3DPEHPK3PXP' });
+  assert.ok(!('appareil' in sansAppareil.history()[0]));
+});

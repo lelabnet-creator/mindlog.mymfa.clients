@@ -76,6 +76,7 @@ pub fn etat_depuis_texte(texte: &str) -> Result<Option<(mymfa_core::sync2::EtatS
         appareil: f.appareil,
         horloge: mymfa_core::sync2::Horloge { l: f.horloge.l, c: f.horloge.c },
         repere: f.repere,
+        description: None,
     };
     Ok(Some((etat, f.drive)))
 }
@@ -345,6 +346,7 @@ mod tests {
             appareil: "abc123".into(),
             horloge: mymfa_core::sync2::Horloge { l: 1234, c: 5 },
             repere: "0000000000000000000000abc123".into(),
+            description: None,
         };
         let drive = Some(SauvegardeDrive { id: "F".into(), revision: "R".into(), modifiee_le: "2026-11-11T14:05:00.000Z".into() });
         let texte = etat_en_texte(&etat, drive.as_ref());

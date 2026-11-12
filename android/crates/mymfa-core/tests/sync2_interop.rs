@@ -33,6 +33,11 @@ fn etat_de(case: &Value) -> EtatSynchro {
         appareil: e["appareil"].as_str().unwrap().to_string(),
         horloge: Horloge { l: e["horloge"]["l"].as_i64().unwrap(), c: e["horloge"]["c"].as_u64().unwrap() as u32 },
         repere: e["repere"].as_str().unwrap_or("").to_string(),
+        // Description de l'appareil (SYN-09), facultative dans les cas.
+        description: mymfa_core::sync2::Description::nouvelle(
+            e["type"].as_str().unwrap_or(""),
+            e["nom"].as_str().map(str::to_string),
+        ),
     }
 }
 

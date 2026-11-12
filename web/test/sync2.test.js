@@ -439,3 +439,51 @@ test('trace vue par tous et retenue écoulée : effacée de toutes les copies', 
     assert.ok(items.length === 0, `${nom} : trace vue partout, l'élément sort de la copie`);
   }
 });
+
+/* ─── Registre : description des appareils (SYN-09) ─── */
+
+const registre = (map) => JSON.parse(map[Sync2.SYNC_KEY]).appareils;
+
+test("l'appareil se décrit dans le registre à chaque fusion", () => {
+  const etat = Sync2.nouvelEtat('pc', T0, { type: 'web', nom: 'Firefox · Linux' });
+  const { donnees } = Sync2.fusion(copie([compte('a', 'GitHub', '2026-11-11T14:00:00.000Z')]), {}, etat, T0);
+  assert.deepStrictEqual(registre(donnees).pc, { vu: etat.repere, actifLe: T0, type: 'web', nom: 'Firefox · Linux' });
+});
+
+test('description : gardée de la copie reçue quand l’appareil ne sait pas se décrire', () => {
+  const decrit = Sync2.fusion({}, {}, Sync2.nouvelEtat('pc', T0, { type: 'linux', nom: 'portable' }), T0).donnees;
+  const muet = Sync2.nouvelEtat('pc', T0 + MINUT);
+  const { donnees } = Sync2.fusion(decrit, {}, muet, T0 + MINUT);
+  assert.strictEqual(registre(donnees).pc.type, 'linux');
+  assert.strictEqual(registre(donnees).pc.nom, 'portable');
+  assert.strictEqual(registre(donnees).pc.actifLe, T0 + MINUT);
+});
+
+test('description : fusion commutative, la plus récente activité fait foi, ancienne forme lue', () => {
+  const marque = (appareils) => ({ [Sync2.SYNC_KEY]: JSON.stringify({ sync: 'v2', appareils, historiqueVideLe: null }) });
+  const vu = Sync2.encoderTampon(T0, 0, 'tel');
+  const a = marque({ tel: { vu, actifLe: T0, type: 'android', nom: 'ancien nom' }, pc: vu });
+  const b = marque({ tel: { vu, actifLe: T0 + MINUT, type: 'android', nom: 'Pixel' }, pc: { vu, actifLe: T0 } });
+  const ab = Sync2.fusion(a, b, Sync2.nouvelEtat('x', T0 + 2 * MINUT), T0 + 2 * MINUT).donnees;
+  const ba = Sync2.fusion(b, a, Sync2.nouvelEtat('x', T0 + 2 * MINUT), T0 + 2 * MINUT).donnees;
+  assert.deepStrictEqual(registre(ab).tel, { vu, actifLe: T0 + MINUT, type: 'android', nom: 'Pixel' });
+  assert.deepStrictEqual(registre(ab), registre(ba));
+  assert.deepStrictEqual(registre(ab).pc, { vu, actifLe: T0 }, 'ancienne forme : ni type ni nom inventés');
+  // Une copie sans description ne l'efface pas.
+  const c = marque({ tel: { vu, actifLe: T0 + 5 * MINUT } });
+  const ac = Sync2.fusion(ab, c, Sync2.nouvelEtat('x', T0 + 6 * MINUT), T0 + 6 * MINUT).donnees;
+  assert.strictEqual(registre(ac).tel.nom, 'Pixel');
+  assert.strictEqual(registre(ac).tel.actifLe, T0 + 5 * MINUT);
+});
+
+test('etatPersistant : description posée, puis changée par decrire()', () => {
+  const carte = new Map();
+  const stockage = { getItem: (k) => (carte.has(k) ? carte.get(k) : null), setItem: (k, v) => carte.set(k, String(v)) };
+  const temps = Sync2.etatPersistant(stockage, () => T0, { type: 'web', nom: 'Chrome · Linux' });
+  assert.strictEqual(temps.etat.type, 'web');
+  temps.decrire({ type: 'extension', nom: 'Extension · Chrome' });
+  assert.strictEqual(temps.etat.type, 'extension');
+  assert.strictEqual(temps.etat.nom, 'Extension · Chrome');
+  temps.decrire(null);
+  assert.ok(!('type' in temps.etat) && !('nom' in temps.etat));
+});

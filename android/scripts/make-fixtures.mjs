@@ -182,13 +182,15 @@ function sync2Cases() {
     // La fusion JS calcule le résultat attendu ; `construire` peut vérifier des
     // attentes supplémentaires (genres de rapport, traces) sur place.
     const e = { appareil: 'pc', horloge: { ...debut, ...etat?.horloge }, repere: etat?.repere || '' };
-    const { donnees, rapport } = Sync2.fusion(locale, distante, { appareil: e.appareil, horloge: new Sync2.Horloge(e.horloge.l), repere: e.repere, }, maintenant);
+    // Description de l'appareil (SYN-09) : facultative, citée dans le cas si posée.
+    const description = etat?.type ? { type: etat.type, ...(etat.nom ? { nom: etat.nom } : {}) } : {};
+    const { donnees, rapport } = Sync2.fusion(locale, distante, { appareil: e.appareil, horloge: new Sync2.Horloge(e.horloge.l), repere: e.repere, ...description }, maintenant);
     if (e.horloge.c !== undefined) { /* l'horloge d'entrée est citée telle quelle */ }
     const cas = {
       name: nom,
       locale,
       distante,
-      etat: { appareil: e.appareil, horloge: e.horloge, repere: e.repere },
+      etat: { appareil: e.appareil, horloge: e.horloge, repere: e.repere, ...description },
       maintenant,
       attendu: donnees,
       aEnvoyer: rapport.aEnvoyer,
@@ -314,6 +316,37 @@ function sync2Cases() {
     ajouter('v2-trace-recente-gardee', locale, distante, null, (cas) => {
       const items2 = JSON.parse(cas.attendu['mymfa.accounts.v1']);
       if (items2.length !== 1) throw new Error('la trace récente doit être gardée pour se propager');
+    });
+  }
+
+  // Registre décrit (SYN-09) : chaque côté porte une description différente de
+  // « tel » (la plus récente activité fait foi), « pc » à l'ancienne forme se
+  // décrit à la fusion ; l'historique garde l'appareil auteur de chaque entrée.
+  {
+    const evenement = (id, at, appareil) => ({
+      id, at, action: 'create', accountId: 'a1', label: 'GitHub — moi@example.net', tag: null, details: null, appareil,
+    });
+    const locale = Sync2.migrer({ 'mymfa.accounts.v1': JSON.stringify([compte2('a1', 'GitHub', '2026-01-01T00:00:00.000Z')]) }, maintenant, 'pc');
+    const distante = JSON.parse(JSON.stringify(locale));
+    locale[Sync2.SYNC_KEY] = JSON.stringify({
+      sync: 'v2',
+      appareils: { pc: stamp(T2 - 9 * MINUT_MS, 0, 'pc'), tel: { vu: stamp(T2 - 9 * MINUT_MS, 0, 'tel'), actifLe: T2 - 3 * MINUT_MS, type: 'android', nom: 'ancien nom' } },
+      historiqueVideLe: null,
+    });
+    distante[Sync2.SYNC_KEY] = JSON.stringify({
+      sync: 'v2',
+      appareils: { tel: { vu: stamp(T2 - 2 * MINUT_MS, 0, 'tel'), actifLe: T2 - 2 * MINUT_MS, type: 'android', nom: 'Pixel' }, lin: { vu: stamp(T2 - 5 * MINUT_MS, 0, 'lin'), actifLe: T2 - 5 * MINUT_MS, type: 'linux' } },
+      historiqueVideLe: null,
+    });
+    locale['mymfa.history.v1'] = JSON.stringify([evenement('h1', '2026-11-11T13:00:00.000Z', 'pc')]);
+    distante['mymfa.history.v1'] = JSON.stringify([evenement('h2', '2026-11-11T13:30:00.000Z', 'tel')]);
+    ajouter('v2-registre-decrit-et-historique-source', locale, distante, { type: 'web', nom: 'Firefox · Linux' }, (cas) => {
+      const appareils = JSON.parse(cas.attendu[Sync2.SYNC_KEY]).appareils;
+      if (appareils.tel.nom !== 'Pixel' || appareils.pc.type !== 'web' || appareils.lin.type !== 'linux' || 'nom' in appareils.lin) {
+        throw new Error('registre décrit inattendu');
+      }
+      const historique = JSON.parse(cas.attendu['mymfa.history.v1']);
+      if (historique.map((h) => h.appareil).join() !== 'tel,pc') throw new Error("l'historique doit garder l'appareil auteur");
     });
   }
 

@@ -300,11 +300,60 @@ fn ecrire_liste(map: &mut DataMap, cle: &str, items: &[Value]) {
 /// Entrée du registre pour un appareil : `vu` est son repère de couverture (le
 /// plus grand tampon qu'il a traité — c'est lui qui autorise l'élagage des
 /// traces), `actif_le` la date (ms) de sa dernière synchro — c'est lui qui juge
-/// le silence d'un an.
-#[derive(Clone, Debug, PartialEq)]
+/// le silence d'un an. `description` : ce que l'appareil dit de lui-même
+/// (SYN-09), facultatif — l'ancienne forme n'en a pas.
+#[derive(Clone, Debug, Default, PartialEq)]
 pub struct Vu {
     pub tampon: Tampon,
     pub actif_le: i64,
+    pub description: Option<Description>,
+}
+
+/// Description d'un appareil dans le registre (SYN-09) : son type de client
+/// (`web`, `extension`, `linux`, `android`) et un nom lisible. Écrite par
+/// l'appareil lui-même à chaque fusion ; affichée comme « source » des
+/// changements. Sans type, pas de description (le nom seul ne se garde pas).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Description {
+    pub type_: String,
+    pub nom: Option<String>,
+}
+
+impl Description {
+    pub fn nouvelle(type_: impl Into<String>, nom: Option<String>) -> Option<Self> {
+        let type_ = type_.into();
+        if type_.is_empty() {
+            return None;
+        }
+        Some(Self { type_, nom: nom.filter(|n| !n.is_empty()) })
+    }
+}
+
+fn lire_description(e: &Map<String, Value>) -> Option<Description> {
+    let type_ = e.get("type").and_then(Value::as_str).filter(|t| !t.is_empty())?;
+    let nom = e.get("nom").and_then(Value::as_str).filter(|n| !n.is_empty()).map(str::to_string);
+    Some(Description { type_: type_.to_string(), nom })
+}
+
+/// De deux entrées du registre pour le même appareil, la description qui fait
+/// foi : celle de l'entrée qui en a une ; sinon la plus grande (actifLe, type,
+/// nom) — même choix des deux côtés d'une fusion (miroir de js/sync2.js).
+fn description_gagnante(a: &Vu, b: &Vu) -> Option<Description> {
+    match (&a.description, &b.description) {
+        (_, None) => a.description.clone(),
+        (None, _) => b.description.clone(),
+        (Some(da), Some(db)) => {
+            if a.actif_le != b.actif_le {
+                return if a.actif_le > b.actif_le { a.description.clone() } else { b.description.clone() };
+            }
+            if da.type_ != db.type_ {
+                return if da.type_ > db.type_ { a.description.clone() } else { b.description.clone() };
+            }
+            let na = da.nom.as_deref().unwrap_or("");
+            let nb = db.nom.as_deref().unwrap_or("");
+            if na >= nb { a.description.clone() } else { b.description.clone() }
+        }
+    }
 }
 
 /// Contenu du marqueur : registre des appareils, vidage d'historique tamponné, et
@@ -333,14 +382,15 @@ fn lire_marqueur(map: &DataMap) -> Marqueur {
         .map(|m| {
             m.iter()
                 .filter_map(|(k, v)| {
-                    // Forme riche { vu, actifLe } ; une chaîne simple (ancienne
-                    // forme) vaut couverture seule, activité inconnue (0).
+                    // Forme riche { vu, actifLe, type?, nom? } ; une chaîne simple
+                    // (ancienne forme) vaut couverture seule, activité inconnue (0).
                     let vu = match v {
                         Value::Object(e) => Vu {
                             tampon: e.get("vu").and_then(Value::as_str).unwrap_or("").to_string(),
                             actif_le: e.get("actifLe").and_then(Value::as_i64).unwrap_or(0),
+                            description: lire_description(e),
                         },
-                        Value::String(t) => Vu { tampon: t.clone(), actif_le: 0 },
+                        Value::String(t) => Vu { tampon: t.clone(), actif_le: 0, description: None },
                         _ => return None,
                     };
                     Some((k.clone(), vu))
@@ -364,10 +414,16 @@ fn ecrire_marqueur(map: &mut DataMap, marqueur: &Marqueur) {
     objet.insert("sync".to_string(), Value::String("v2".to_string()));
     let mut appareils = Map::new();
     for (a, vu) in &marqueur.appareils {
-        appareils.insert(
-            a.clone(),
-            serde_json::json!({ "vu": vu.tampon, "actifLe": vu.actif_le }),
-        );
+        let mut entree = Map::new();
+        entree.insert("vu".to_string(), Value::String(vu.tampon.clone()));
+        entree.insert("actifLe".to_string(), Value::from(vu.actif_le));
+        if let Some(d) = &vu.description {
+            entree.insert("type".to_string(), Value::String(d.type_.clone()));
+            if let Some(nom) = &d.nom {
+                entree.insert("nom".to_string(), Value::String(nom.clone()));
+            }
+        }
+        appareils.insert(a.clone(), Value::Object(entree));
     }
     objet.insert("appareils".to_string(), Value::Object(appareils));
     objet.insert(
@@ -400,11 +456,19 @@ pub struct EtatSynchro {
     /// Tampon du plus grand contenu vu à la dernière synchro : un champ changé
     /// des deux côtés depuis ce repère est un conflit.
     pub repere: String,
+    /// Ce que l'appareil écrit de lui-même dans le registre (SYN-09).
+    pub description: Option<Description>,
 }
 
 impl EtatSynchro {
     pub fn nouvelle(appareil: impl Into<String>, maintenant: i64) -> Self {
-        Self { appareil: appareil.into(), horloge: Horloge::nouvelle(maintenant), repere: String::new() }
+        Self { appareil: appareil.into(), horloge: Horloge::nouvelle(maintenant), repere: String::new(), description: None }
+    }
+
+    /// L'appareil se décrit : type de client et nom lisible.
+    pub fn avec_description(mut self, type_: impl Into<String>, nom: Option<String>) -> Self {
+        self.description = Description::nouvelle(type_, nom);
+        self
     }
 }
 
@@ -532,7 +596,7 @@ pub fn migrer(donnees: &DataMap, _maintenant: i64, appareil: &str) -> DataMap {
     };
     marqueur.appareils = ancien.appareils;
     if !marqueur.appareils.iter().any(|(a, _)| a == appareil) {
-        marqueur.appareils.push((appareil.to_string(), Vu { tampon: encoder_tampon(0, 0, APPAREIL_HERITAGE), actif_le: 0 }));
+        marqueur.appareils.push((appareil.to_string(), Vu { tampon: encoder_tampon(0, 0, APPAREIL_HERITAGE), actif_le: 0, description: None }));
     }
     ecrire_marqueur(&mut out, &marqueur);
     // La trace v1 est consommée : les suppressions vivent dans les éléments.
@@ -698,12 +762,17 @@ pub fn fusion(locale: &DataMap, distante: &DataMap, etat: &mut EtatSynchro, main
     etat.repere = repere;
     // L'appareil publie son repère (les traces qu'il a vues pourront être effacées)
     // et son activité fraîche : il ne se fera pas retirer du registre tant qu'il
-    // se synchronise.
-    let soi = Vu { tampon: etat.repere.clone(), actif_le: maintenant };
-    if let Some(position) = marqueur.appareils.iter().position(|(a, _)| a == &etat.appareil) {
-        marqueur.appareils[position].1 = soi;
-    } else {
-        marqueur.appareils.push((etat.appareil.clone(), soi));
+    // se synchronise. Il se décrit s'il sait le faire (SYN-09), sinon garde la
+    // description reçue.
+    let position = marqueur.appareils.iter().position(|(a, _)| a == &etat.appareil);
+    let description = etat
+        .description
+        .clone()
+        .or_else(|| position.and_then(|i| marqueur.appareils[i].1.description.clone()));
+    let soi = Vu { tampon: etat.repere.clone(), actif_le: maintenant, description };
+    match position {
+        Some(i) => marqueur.appareils[i].1 = soi,
+        None => marqueur.appareils.push((etat.appareil.clone(), soi)),
     }
     ecrire_marqueur(&mut resultat, &marqueur);
 
@@ -879,6 +948,8 @@ fn fusionner_marqueurs(a: &Marqueur, b: &Marqueur, maintenant: i64, rapport: &mu
     for (cle, vu) in &b.appareils {
         match out.iter().position(|(k, _)| k == cle) {
             Some(i) => {
+                // La description se choisit sur les entrées d'origine, avant le max d'actifLe.
+                out[i].1.description = description_gagnante(&out[i].1, vu);
                 out[i].1.tampon = tampon_max(&out[i].1.tampon, &vu.tampon).to_string();
                 out[i].1.actif_le = out[i].1.actif_le.max(vu.actif_le);
             }
@@ -2033,5 +2104,52 @@ mod tests {
         assert!(fusionne.contains_key(SYNC_KEY));
         assert!(fusionne.contains_key(HISTORY_KEY));
     }
-}
 
+    /* ─── Registre : description des appareils (SYN-09) ─── */
+
+    fn registre(map: &DataMap) -> Value {
+        serde_json::from_str::<Value>(&map[SYNC_KEY]).unwrap()["appareils"].clone()
+    }
+
+    fn marque(appareils: Value) -> DataMap {
+        let mut map = DataMap::new();
+        map.insert(SYNC_KEY.to_string(), serde_json::json!({ "sync": "v2", "appareils": appareils, "historiqueVideLe": null }).to_string());
+        map
+    }
+
+    #[test]
+    fn l_appareil_se_decrit_dans_le_registre() {
+        let etat = &mut EtatSynchro::nouvelle("pc", T0).avec_description("linux", Some("portable".into()));
+        let (fusionne, _) = fusion(&copie(vec![compte("a", "GitHub", "2026-11-11T14:00:00.000Z")]), &DataMap::new(), etat, T0);
+        let pc = &registre(&fusionne)["pc"];
+        assert_eq!(pc["type"], "linux");
+        assert_eq!(pc["nom"], "portable");
+        assert_eq!(pc["actifLe"], T0);
+    }
+
+    #[test]
+    fn description_gardee_quand_l_appareil_ne_se_decrit_pas() {
+        let (decrit, _) = fusion(&DataMap::new(), &DataMap::new(), &mut EtatSynchro::nouvelle("pc", T0).avec_description("web", None), T0);
+        let (fusionne, _) = fusion(&decrit, &DataMap::new(), &mut EtatSynchro::nouvelle("pc", T0 + MINUT), T0 + MINUT);
+        let pc = &registre(&fusionne)["pc"];
+        assert_eq!(pc["type"], "web");
+        assert!(pc.get("nom").is_none(), "pas de nom inventé");
+        assert_eq!(pc["actifLe"], T0 + MINUT);
+    }
+
+    #[test]
+    fn description_fusion_commutative_ancienne_forme_lue() {
+        let vu = encoder_tampon(T0, 0, "tel");
+        let a = marque(serde_json::json!({ "tel": { "vu": vu, "actifLe": T0, "type": "android", "nom": "ancien nom" }, "pc": vu }));
+        let b = marque(serde_json::json!({ "tel": { "vu": vu, "actifLe": T0 + MINUT, "type": "android", "nom": "Pixel" }, "pc": { "vu": vu, "actifLe": T0 } }));
+        let (ab, _) = fusion(&a, &b, &mut EtatSynchro::nouvelle("x", T0 + 2 * MINUT), T0 + 2 * MINUT);
+        let (ba, _) = fusion(&b, &a, &mut EtatSynchro::nouvelle("x", T0 + 2 * MINUT), T0 + 2 * MINUT);
+        assert_eq!(registre(&ab)["tel"], serde_json::json!({ "vu": vu, "actifLe": T0 + MINUT, "type": "android", "nom": "Pixel" }));
+        assert_eq!(registre(&ab), registre(&ba));
+        assert_eq!(registre(&ab)["pc"], serde_json::json!({ "vu": vu, "actifLe": T0 }), "ancienne forme : ni type ni nom inventés");
+        let c = marque(serde_json::json!({ "tel": { "vu": vu, "actifLe": T0 + 5 * MINUT } }));
+        let (ac, _) = fusion(&ab, &c, &mut EtatSynchro::nouvelle("x", T0 + 6 * MINUT), T0 + 6 * MINUT);
+        assert_eq!(registre(&ac)["tel"]["nom"], "Pixel", "une copie sans description ne l'efface pas");
+        assert_eq!(registre(&ac)["tel"]["actifLe"], T0 + 5 * MINUT);
+    }
+}

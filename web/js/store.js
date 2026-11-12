@@ -120,6 +120,8 @@
         label: account ? describe(account) : null,
         tag: account ? account.tag : null,
         details: details || null,
+        // Appareil auteur (SYN-09) : la source affichée dans l'espace Synchro.
+        ...(temps && typeof temps.appareil === 'string' && temps.appareil ? { appareil: temps.appareil } : {}),
       });
       write(HISTORY_KEY, history.slice(0, HISTORY_MAX));
     }
