@@ -6,7 +6,7 @@
   // Lock.storage : localStorage en clair, ou coffre chiffré une fois le mot de passe maître activé.
   const store = Store.createStore(Lock.storage, Lock.temps);
   const VERSION = '0.4.0';
-  const VIEWS = ['home', 'scan', 'new', 'passwords', 'dashboard', 'activity', 'settings'];
+  const VIEWS = ['home', 'scan', 'new', 'passwords', 'dashboard', 'activity', 'sync', 'settings'];
   const RING_LENGTH = 2 * Math.PI * 19;
   const EXPIRING_SECONDS = 5;
   const THEME_KEY = 'mymfa.theme';
@@ -312,6 +312,7 @@
     showView(VIEWS.includes(name) ? name : 'home');
     if (name === 'passwords') Credentials.show(arg || null);
     if (name === 'dashboard') Dashboard.render();
+    if (name === 'sync') SyncView.show();
     if (name === 'settings' && arg === 'import') pointToImport();
   }
 
@@ -1279,7 +1280,7 @@
     return driveClient;
   }
 
-  // Heure des serveurs Google reçue d'une réponse Drive (SYN-08) : corrige T(),
+  // Heure des serveurs Google reçue de la réponse à un envoi Drive (SYN-08) : corrige T(),
   // alerte au-delà de 5 min de décalage, dernier décalage conservé hors ligne.
   function noterHeureDrive(entreeDrive) {
     const ms = Heure.heureDrive(entreeDrive);
@@ -1316,10 +1317,8 @@
           temps: Lock.temps,
           maintenant: () => Lock.heure.maintenant(),
           source: 'app',
-          surReponse: (fichier) => {
-            noterHeureDrive(fichier);
-            rememberDriveFile(fichier);
-          },
+          surFichier: rememberDriveFile,
+          surHeure: noterHeureDrive,
         }).cycle();
         // Dans l'extension (hôte ancien, sans délégation) : la synchro compte pour sa politique.
         if (HOST) {
@@ -1333,6 +1332,32 @@
       syncEnCours = null;
     });
     return syncEnCours;
+  }
+
+  /** Données lisibles pour l'espace Synchro : la copie déchiffrée, ou les clés en clair. */
+  function donneesSynchro() {
+    const statut = Lock.status();
+    if (statut === 'unlocked') return Lock.donnees();
+    if (statut === 'locked') return {};
+    const out = {};
+    for (const key of [Store.ACCOUNTS_KEY, Store.LOGINS_KEY, Store.PASSKEYS_KEY, Store.HISTORY_KEY, Sync2.SYNC_KEY]) {
+      const value = Lock.storage.getItem(key);
+      if (value !== null) out[key] = value;
+    }
+    return out;
+  }
+
+  /** État Drive pour l'espace Synchro. `prochaine` : seulement dans l'extension (politique). */
+  function etatDrive() {
+    const derniere = readPref(DRIVE_LAST_KEY);
+    const modifie = Lock.modifiedAt();
+    return {
+      configure: Boolean(driveClientId()),
+      derniere,
+      enAttente: Boolean(derniere && modifie && modifie > derniere),
+      fichier: driveFile(),
+      ...(hostDrive ? { prochaine: hostDrive.every ? hostDrive.next : null } : {}),
+    };
   }
 
   /** Toast de fin de cycle : ce qui a été reçu et envoyé. */
@@ -1545,7 +1570,7 @@
       busy(event.currentTarget, async () => {
         const backup = await drive().download();
         if (!Vault.parse(backup.content)) throw new Vault.VaultError('invalidBackup');
-        noterHeureDrive(backup);
+        // Pas d'heure de référence ici : le modifiedTime d'un fichier lu date de son écriture.
         rememberDriveFile(backup.file);
         pendingRestore = backup;
       })
@@ -1579,6 +1604,7 @@
     if (state.view === 'activity') renderActivity();
     if (state.view === 'passwords') Credentials.render();
     if (state.view === 'dashboard') Dashboard.render();
+    if (state.view === 'sync') SyncView.render();
     el.settingsFoot.textContent = t('settings.foot', { version: VERSION });
     renderDrive();
     renderExtension();
@@ -1642,6 +1668,17 @@
     setupDrive();
     Credentials.init({ store, toast, errorMessage, copyText });
     Dashboard.init({ store, toast, errorMessage });
+    SyncView.init({
+      store,
+      toast,
+      errorMessage,
+      synchroniser,
+      messageSynchro,
+      renderAll,
+      host: HOST,
+      donnees: donneesSynchro,
+      etatDrive,
+    });
 
     el.banner.hidden = Boolean(window.crypto && window.crypto.subtle);
     Lock.init({
@@ -1673,6 +1710,7 @@
         stopCamera();
         Credentials.reset();
         Dashboard.reset();
+        SyncView.reset();
         if (el.dialog.open) el.dialog.close();
       },
     });

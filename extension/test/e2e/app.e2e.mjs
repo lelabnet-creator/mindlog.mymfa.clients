@@ -85,11 +85,11 @@ await context.route('https://www.googleapis.com/**', async (route) => {
   driveCalls.push({ method: req.method(), url, auth: req.headers().authorization });
   const json = (body) => route.fulfill({ status: 200, headers: cors, contentType: 'application/json', body: JSON.stringify(body) });
   if (url.includes('/upload/') && req.method() === 'POST') {
-    driveFile = { id: 'f1', modifiedTime: '2026-10-31T10:00:00.000Z', content: req.postData().split('\r\n\r\n')[2].split('\r\n--')[0] };
+    driveFile = { id: 'f1', modifiedTime: new Date().toISOString(), content: req.postData().split('\r\n\r\n')[2].split('\r\n--')[0] };
     return json({ id: 'f1', modifiedTime: driveFile.modifiedTime });
   }
   if (url.includes('/upload/') && req.method() === 'PATCH') {
-    driveFile = { ...driveFile, content: req.postData() };
+    driveFile = { ...driveFile, modifiedTime: new Date().toISOString(), content: req.postData() }; // comme Google : l'heure de l'écriture
     return json({ id: 'f1', modifiedTime: driveFile.modifiedTime });
   }
   if (url.includes('alt=media')) return route.fulfill({ status: 200, headers: cors, contentType: 'application/json', body: driveFile.content });
@@ -237,6 +237,17 @@ try {
     assert.ok(!driveFile.content.includes(SECRET) && !driveFile.content.includes('Proton'), 'aucun secret en clair sur Drive');
     assert.equal(JSON.parse(driveFile.content).v, 2); // synchro v2 : marqueur dans les données, enveloppe v2
     assert.ok(driveCalls.length && driveCalls.every((c) => c.auth === 'Bearer jeton'));
+  });
+
+  await step('espace Synchro dans l’app embarquée : journal de l’arrière-plan, appareils de l’extension', async () => {
+    await app.goto(`${APP}#/sync`);
+    const journal = app.locator('#sync-journal');
+    await journal.waitFor();
+    // La synchro demandée par l'app a été conduite par l'arrière-plan : son journal est lu ici.
+    assert.match(await journal.textContent(), /Extension/);
+    assert.match(await app.textContent('#sync-devices'), /Extension/);
+    assert.match(await app.textContent('#sync-devices'), /Arrière-plan de cette extension/);
+    await app.goto(`${APP}#/settings`);
   });
 
   await step('sauvegarde automatique : politique réglée dans l’app, tenue par l’extension, visible dans le popup', async () => {

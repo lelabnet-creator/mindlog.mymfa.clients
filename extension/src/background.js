@@ -155,7 +155,7 @@ function chargerTemps() {
       return {
         temps,
         maintenant: () => horloge.maintenant(),
-        /** Heure des serveurs Google d'une réponse Drive (SYN-08) : corrige T(), conservée. */
+        /** Heure des serveurs Google de la réponse à un envoi Drive (SYN-08) : corrige T(), conservée. */
         noterHeure(fichier) {
           const ms = Heure.heureDrive(fichier);
           if (ms === null) return;
@@ -626,7 +626,7 @@ async function driveExchange(client) {
       exporter: async () => (await getSnapshot())[VAULT_KEY],
       ajouterJournal,
     };
-    const entree = await DriveSync.creer({ client, coffre, temps, maintenant, source: 'extension', surReponse: noterHeure }).cycle();
+    const entree = await DriveSync.creer({ client, coffre, temps, maintenant, source: 'extension', surHeure: noterHeure }).cycle();
     const recus = totalChangements(entree.totaux && entree.totaux.recus);
     if (recus) {
       pushToApp();

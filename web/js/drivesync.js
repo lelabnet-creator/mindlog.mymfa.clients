@@ -58,7 +58,7 @@
   function libelle(cle, item) {
     const parts =
       cle === Store.LOGINS_KEY
-        ? [item.title || hote(item.origin), item.username]
+        ? [hote(item.origin), item.username] // comme l'historique : site — identifiant
         : cle === Store.PASSKEYS_KEY
         ? [item.rpName || item.rpId, item.userName]
         : [item.issuer, item.account];
@@ -163,9 +163,12 @@
  *           (donnees peut être asynchrone ; remplacerDonnees reçoit aussi la copie lue avant la fusion)
    * temps   : état d'appareil persistant (Sync2.etatPersistant) — { appareil, etat, persister() }
    * maintenant : T() en ms ; source : 'app' | 'extension' (qui conduit le cycle) ;
-   * surReponse(fichier) : chaque réponse Drive (heure des serveurs Google, SYN-08).
+   * surFichier(meta) : métadonnées du fichier Drive lu ou écrit (nom, taille, dates) ;
+   * surHeure(meta) : réponse à un ENVOI — son modifiedTime est l'heure des serveurs Google
+   *   à l'instant de l'écriture (SYN-08). Celui d'un fichier simplement lu date de sa
+   *   dernière modification : jamais une référence d'heure.
    */
-  function creer({ client, coffre, temps, maintenant = () => Date.now(), source = 'app', surReponse = () => {} }) {
+  function creer({ client, coffre, temps, maintenant = () => Date.now(), source = 'app', surFichier = () => {}, surHeure = () => {} }) {
     async function cycle() {
       const base = { id: identifiant(), at: new Date(maintenant()).toISOString(), source, appareil: temps.appareil };
       try {
@@ -173,7 +176,7 @@
           const fichier = await client.find();
           let distante = {};
           if (fichier) {
-            surReponse(fichier);
+            surFichier(fichier);
             const lu = await client.download(fichier);
             const record = Vault.parse(lu.content);
             if (!record) throw new SyncError('invalidBackup');
@@ -202,7 +205,8 @@
               throw new SyncError('driveCourse');
             }
             meta = await client.upload(await coffre.exporter(), actuel || null);
-            surReponse(meta);
+            surFichier(meta);
+            surHeure(meta);
             envoye = true;
           }
 

@@ -875,6 +875,54 @@ dialog::backdrop { background: var(--backdrop); }
 .view-dashboard { max-width: 880px; margin: 0 auto; width: 100%; }
 .view-activity .page-head > a.icon-btn { margin-left: auto; }
 .dashboard { display: flex; flex-direction: column; gap: 22px; margin-top: 18px; }
+
+/* ── Espace Synchro (APP-08) ── */
+.sync-state { padding: 14px; display: flex; flex-direction: column; gap: 12px; transition: border-color .2s; }
+.sync-state.is-ok { border-color: var(--accent-line); }
+.sync-state.is-pending { border-color: var(--warn); }
+.sync-state.is-error { border-color: var(--danger); background: linear-gradient(var(--danger-soft), var(--danger-soft)) padding-box; }
+.sync-state-head { display: flex; align-items: flex-start; gap: 12px; flex-wrap: wrap; }
+.sync-state-text { flex: 1 1 220px; min-width: 0; display: flex; flex-direction: column; gap: 2px; }
+.sync-state-title { font-weight: 700; }
+.sync-state-action { flex: none; display: flex; }
+.sync-state-action .btn { display: inline-flex; align-items: center; gap: 8px; }
+.sync-state-action .btn svg { width: 16px; height: 16px; stroke-width: 2.2; }
+.sync-dl { display: grid; grid-template-columns: auto 1fr; gap: 4px 12px; margin: 0; padding-top: 12px; border-top: 1px solid var(--border); font-size: 13px; }
+.sync-dl dt { color: var(--muted); font-weight: 500; }
+.sync-dl dd { margin: 0; min-width: 0; font-weight: 600; overflow-wrap: anywhere; }
+.sync-dl code { font-family: ui-monospace, 'SF Mono', Menlo, Consolas, monospace; font-weight: 500; }
+.sync-device { display: flex; align-items: flex-start; gap: 12px; padding: 14px; }
+.sync-device + .sync-device { border-top: 1px solid var(--border); }
+.sync-count { font-size: 13px; font-weight: 600; }
+.sync-device-name { white-space: normal; overflow-wrap: anywhere; }
+.sync-id { font-family: ui-monospace, 'SF Mono', Menlo, Consolas, monospace; font-size: 12px; }
+.tag.sync-here { background: var(--accent-soft); color: var(--accent-text); }
+.sync-filters { display: flex; flex-direction: column; gap: 8px; }
+.sync-filters-row { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 12px; }
+.sync-filters-row .select-inline { max-width: 100%; }
+.sync-source { display: inline-flex; align-items: center; gap: 4px; font-size: 13px; color: var(--muted); }
+.sync-source svg { width: 14px; height: 14px; stroke-width: 2; flex: none; }
+.sync-cycle + .sync-cycle, .sync-cycle + .activity-item, .activity-item + .sync-cycle { border-top: 1px solid var(--border); }
+.sync-cycle summary { list-style: none; cursor: pointer; }
+.sync-cycle summary::-webkit-details-marker { display: none; }
+.sync-cycle summary:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; border-radius: var(--radius-card); }
+.sync-cycle details[open] summary .activity-subject::after { content: ' ▾'; color: var(--muted); }
+.sync-cycle details:not([open]) summary .activity-subject::after { content: ' ▸'; color: var(--muted); }
+.sync-detail { padding: 0 14px 14px 64px; display: flex; flex-direction: column; gap: 6px; }
+.sync-sub { font-size: 12px; font-weight: 700; letter-spacing: .04em; text-transform: uppercase; color: var(--muted); margin-top: 4px; }
+.sync-changes { list-style: none; padding: 0; margin: 0; display: flex; flex-direction: column; gap: 6px; }
+.sync-change { display: flex; align-items: flex-start; gap: 8px; font-size: 14px; }
+.sync-dot { flex: none; width: 22px; height: 22px; border-radius: 7px; display: flex; align-items: center; justify-content: center; }
+.sync-dot svg { width: 12px; height: 12px; stroke-width: 2.4; }
+.sync-change-text { min-width: 0; overflow-wrap: anywhere; }
+.sync-change-meta { display: block; font-size: 12px; color: var(--muted); }
+.sync-empty { padding: 14px; }
+.sync-more { align-self: flex-start; margin-top: 8px; }
+.sync-section-hint { padding: 0 4px; }
+@media (max-width: 640px) {
+  .sync-detail { padding-left: 14px; }
+  .sync-state-action, .sync-state-action .btn { width: 100%; justify-content: center; }
+}
 .dash-section { display: flex; flex-direction: column; gap: 8px; }
 .dash-section > .section-label { padding: 0 4px; }
 .dash-panel { padding: 14px; display: flex; flex-direction: column; gap: 12px; }

@@ -72,11 +72,11 @@ await page.route('https://www.googleapis.com/**', async (route) => {
   driveCalls.push({ method: req.method(), url, auth: req.headers().authorization });
   const json = (body) => route.fulfill({ status: 200, headers: cors, contentType: 'application/json', body: JSON.stringify(body) });
   if (url.includes('/upload/') && req.method() === 'POST') {
-    driveFile = { id: 'f1', modifiedTime: '2026-10-30T20:00:00.000Z', content: req.postData().split('\r\n\r\n')[2].split('\r\n--')[0] };
+    driveFile = { id: 'f1', modifiedTime: new Date().toISOString(), content: req.postData().split('\r\n\r\n')[2].split('\r\n--')[0] };
     return json({ id: 'f1', modifiedTime: driveFile.modifiedTime });
   }
   if (url.includes('/upload/') && req.method() === 'PATCH') {
-    driveFile = { ...driveFile, content: req.postData() };
+    driveFile = { ...driveFile, modifiedTime: new Date().toISOString(), content: req.postData() }; // comme Google : l'heure de l'écriture
     return json({ id: 'f1', modifiedTime: driveFile.modifiedTime });
   }
   if (url.includes('alt=media')) return route.fulfill({ status: 200, headers: cors, contentType: 'application/json', body: driveFile.content });
@@ -154,6 +154,29 @@ try {
     assert.equal(JSON.parse(driveFile.content).v, 2);
     assert.ok(driveCalls.every((c) => c.auth === 'Bearer jeton'));
     assert.match(await page.textContent('#drive-status'), /Dernière synchro/);
+  });
+
+  await step('espace Synchro : appareil décrit, chronologie avec sa source, journal du premier envoi', async () => {
+    await page.goto(`${BASE}/#/sync`);
+    await page.locator('#sync-journal').waitFor();
+    assert.match(await page.textContent('#sync-status'), /À jour avec Google Drive/);
+    const appareils = await page.textContent('#sync-devices');
+    assert.match(appareils, /App web/);
+    assert.match(appareils, /Cet appareil/);
+    const chronologie = await page.textContent('#sync-timeline');
+    assert.match(chronologie, /GitHub/);
+    assert.match(chronologie, /App web/, 'la source de l’ajout est nommée');
+    assert.match(await page.textContent('#sync-journal'), /Coffre déposé sur Google Drive/);
+    // Synchroniser à nouveau : rien de neuf, rien d'envoyé.
+    const envois = driveCalls.filter((c) => c.url.includes('/upload/')).length;
+    await page.click('#btn-sync-now');
+    await toast.filter({ hasText: 'Déjà à jour' }).waitFor();
+    assert.equal(driveCalls.filter((c) => c.url.includes('/upload/')).length, envois, 'aucun envoi sans changement');
+    await page.locator('#sync-journal', { hasText: 'Déjà à jour' }).waitFor();
+    // Filtre par action : aucune suppression.
+    await page.click('#sync .chip:text-is("Suppression")');
+    await page.locator('#sync .sync-empty', { hasText: 'Aucun changement' }).waitFor();
+    await page.goto(`${BASE}/#/settings`);
   });
 
   await step('verrouillage : écran de verrouillage, codes effacés', async () => {

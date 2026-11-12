@@ -36,6 +36,10 @@
           <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 20V10M10 20V4M16 20v-7M22 20H2"/></svg>
           <span data-i18n="nav.dashboard"></span>
         </a>
+        <a href="#/sync" data-nav="sync" class="only-desktop">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M20 11a8 8 0 0 0-14.9-3.5M4 4v4h4M4 13a8 8 0 0 0 14.9 3.5M20 20v-4h-4"/></svg>
+          <span data-i18n="nav.sync"></span>
+        </a>
         <a href="#/activity" data-nav="activity">
           <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/></svg>
           <span data-i18n="nav.activity"></span>
@@ -277,6 +281,9 @@
           <a href="#/dashboard" class="icon-btn boxed only-mobile" data-i18n-attr="aria-label:nav.dashboard;title:nav.dashboard">
             <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 20V10M10 20V4M16 20v-7M22 20H2"/></svg>
           </a>
+          <a href="#/sync" class="icon-btn boxed only-mobile" data-i18n-attr="aria-label:nav.sync;title:nav.sync">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M20 11a8 8 0 0 0-14.9-3.5M4 4v4h4M4 13a8 8 0 0 0 14.9 3.5M20 20v-4h-4"/></svg>
+          </a>
           <button type="button" class="icon-btn boxed danger" id="btn-clear-history" data-i18n-attr="aria-label:activity.clear;title:activity.clear">
             <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7h16M10 11v6M14 11v6M6 7l1 13h10l1-13M9 7V4h6v3"/></svg>
           </button>
@@ -284,6 +291,17 @@
         <div class="chips" id="activity-filters" role="group" data-i18n-attr="aria-label:activity.filters"></div>
         <div class="activity" id="activity"></div>
         <p class="empty" id="activity-empty" data-i18n="activity.empty" hidden></p>
+      </section>
+
+      <!-- ═════════════ Synchronisation ═════════════ -->
+      <section class="view view-dashboard view-sync" data-view="sync" hidden>
+        <header class="page-head">
+          <div>
+            <h1 data-i18n="sync.title"></h1>
+            <p class="page-sub" data-i18n="sync.subtitle"></p>
+          </div>
+        </header>
+        <div class="dashboard" id="sync"></div>
       </section>
 
       <!-- ═════════════ Tableau de bord ═════════════ -->
@@ -456,6 +474,7 @@
               <button type="button" class="btn btn-ghost" id="btn-drive-restore" data-i18n="drive.restore"></button>
               <button type="button" class="btn btn-ghost" id="btn-drive-undo" data-i18n="drive.undoRestore" hidden></button>
               <button type="button" class="btn btn-ghost" id="btn-drive-edit" data-i18n="drive.editClientId" hidden></button>
+              <a class="btn btn-ghost" href="#/sync" data-i18n="drive.openSync"></a>
             </div>
             <label class="drive-every" id="drive-every-row" hidden>
               <span>
@@ -607,6 +626,7 @@
   <script src="js/audit.js"></script>
   <script src="js/credentials.js"></script>
   <script src="js/dashboard.js"></script>
+  <script src="js/syncview.js"></script>
   <script src="js/importers.js"></script>
   <script src="js/app.js"></script>
 </body>
