@@ -16,6 +16,11 @@ Rust, cœur métier répliqué depuis l'app web. Tickets Plane : épique AND
     un coffre écrit par l'app web ou l'extension s'ouvre ici, et inversement ;
   - fusion `sync.js` (tombstones, `updatedAt`, déduplication par identité,
     historique plafonné, réglages `mymfa.settings.v1`) ;
+  - synchro v2 (SYN-07) : fusion champ par champ par horloge hybride
+    (`sync2.rs`, réplique fidèle de `../web/js/sync2.js`), heure de référence
+    T() (`temps.rs`, SYN-08 — la sonde NTS reste derrière la fonctionnalité
+    cargo `nts`, que l'app n'active pas encore), écritures du Store
+    tamponnées (SYN-12) ;
   - modèle de données `store.js` (comptes, historique, tags, export/import),
     textes FR/EN (fonction cargo `texts`, active par défaut ; le client
     `../linux/` la désactive et se construit sans Node).
@@ -71,7 +76,7 @@ par passkey (PRF). Les onglets concernés affichent « Bientôt ».
 | `scripts/sync-locales.mjs` | Convertit `../web/js/locales/{fr,en}.js` en Rust (web/ reste la source unique, les copies ne se versionnent pas — comme l'extension) |
 | `scripts/make-fixtures.mjs` | Chiffre des coffres de test **avec le vrai `vault.js`** et calcule des fusions attendues avec le vrai `sync.js` |
 | `scripts/interop-check.mjs` | Vérifie qu'un coffre écrit par Rust s'ouvre avec `vault.js` (sens inverse) |
-| `crates/mymfa-core/src/` | `otp`, `otpauth`, `vault`, `sync`, `store`, `passgen`, `texts` (généré) |
+| `crates/mymfa-core/src/` | `otp`, `otpauth`, `vault`, `sync`, `sync2`, `temps`, `store`, `passgen`, `texts` (généré) |
 | `crates/mymfa-core/tests/` | Vecteurs RFC 4226/6238, interop coffre et fusion (fixtures générées) |
 | `crates/mymfa-app/ui/` | `common.slint` (palette, i18n, icônes, composants), `lock`, `home`, `credentials`, `new`, `settings`, `main` |
 | `crates/mymfa-app/src/` | `backend.rs` (état, ticker des codes, auto-lock, vue Mots de passe), `storage.rs` (fichiers, thread d'écriture) |

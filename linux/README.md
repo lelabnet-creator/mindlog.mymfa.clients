@@ -7,7 +7,8 @@ Evolution, tout ce qui passe par libsecret) et une interface D-Bus
 `today.mindlog.MyMfa1` pour [hyprdesk](../../mindlog.hyprland_desktop). Le
 coffre s'ouvre à la connexion, sans deuxième saisie, grâce au module PAM
 `pam_mymfa.so`. Tickets Plane : épique LIN (LIN-02 démon et CLI, LIN-03
-déverrouillage à la connexion, LIN-04 interface hyprdesk).
+déverrouillage à la connexion, LIN-04 interface hyprdesk, LIN-05 coffre
+modifiable, LIN-06 synchro Google Drive).
 
 ## Ce que contient ce client
 
@@ -17,8 +18,10 @@ déverrouillage à la connexion, LIN-04 interface hyprdesk).
   sans ses textes générés (fonction `texts` désactivée : pas besoin de Node).
   Le fichier est `~/.local/share/mymfa/mymfa-vault.json`, même nom et même
   contenu que la sauvegarde Drive du web — et même dossier que l'app Slint
-  lancée sur le bureau. Le démon **ne l'écrit jamais** : il en lit les comptes
-  2FA et les logins des sites, et le relit s'il est remplacé sur le disque.
+  lancée sur le bureau. Le démon en lit les comptes 2FA et les logins des
+  sites, le modifie par les mêmes règles que le web (`Apply`, LIN-05), le
+  synchronise par Google Drive (LIN-06, cycle v2) et le relit s'il est
+  remplacé sur le disque.
 - **Secrets des applications dans un trousseau local**
   (`~/.local/share/mymfa/mymfa-keyring.json`, 0600), chiffré par la clé du
   coffre (DEK) avec sa propre AAD (`mymfa:linux:keyring:v1`) : jamais
@@ -42,10 +45,12 @@ linux/
 ├── crates/mymfa-sceau/        partagé démon ↔ PAM : dérivation de la clé de
 │                              session, sceau, remise par /run/user/UID
 ├── crates/mymfa-linux/        binaire `mymfa` (démon + CLI)
-│   └── src/  main, cli, demon (état, sceau, remise), coffre (lecture du
-│             coffre, codes), trousseau (fichier local chiffré), session
-│             (plain, DH), service (Secret Service), interface (MyMfa1),
-│             invite (pinentry de repli), presse_papiers (wl-copy),
+│   └── src/  main, cli, demon (état, sceau, remise), chemins (emplacements),
+│             coffre (le coffre ouvert : contenu, codes, écriture), edition
+│             (contenu et opérations du web, LIN-05), drive (jetons OAuth,
+│             PKCE), synchro (cycle v2), trousseau (fichier local chiffré),
+│             session (plain, DH), service (Secret Service), interface
+│             (MyMfa1), invite (pinentry de repli), presse_papiers (wl-copy),
 │             import_gnome
 ├── crates/pam_mymfa/          cdylib `libpam_mymfa.so` (FFI PAM écrite à la main)
 │   └── examples/essai_pam.rs  banc d'essai : vraie pile libpam, sans root
@@ -310,11 +315,8 @@ réponde seul : `MYMFA_PINENTRY=none` (unit systemd, ligne commentée prévue).
   d'un objet verrouille tout.
 - Les sessions Secret Service ne sont pas fermées au départ du client
   (`NameOwnerChanged`) ; elles meurent avec le démon.
-- Les logins du coffre sont en lecture seule côté Secret Service (le démon
-  n'écrit jamais le coffre) ; les codes HOTP n'avancent pas leur compteur.
-- Le coffre n'est pas synchronisé par ce client : il s'installe avec
-  `mymfa init --from` (sauvegarde Drive du web) ; une synchronisation Drive
-  ou depuis l'app Slint du bureau reste à faire.
+- Les logins du coffre sont en lecture seule côté Secret Service ; les codes
+  HOTP n'avancent pas leur compteur (l'écriture passe par `Apply`).
 - Écran de verrouillage (hyprlock) : la pile `auth` seule n'ouvre pas de
   session, donc ne remet pas de clé ; si hyprdesk verrouille aussi le coffre
   à l'écran de veille, il faudra une remise à l'authentification réussie
