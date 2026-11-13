@@ -372,6 +372,12 @@ pub struct Marqueur {
     pub v1: Vec<(String, Tampon)>,
 }
 
+/// Registre des appareils du coffre (SYN-09) : chacun avec sa couverture, sa
+/// dernière activité et sa description — pour montrer qui partage le coffre.
+pub fn registre(map: &DataMap) -> Vec<(String, Vu)> {
+    lire_marqueur(map).appareils
+}
+
 fn lire_marqueur(map: &DataMap) -> Marqueur {
     let Some(brut) = map.get(SYNC_KEY) else { return Marqueur::default() };
     let Ok(Value::Object(objet)) = serde_json::from_str::<Value>(brut) else { return Marqueur::default() };

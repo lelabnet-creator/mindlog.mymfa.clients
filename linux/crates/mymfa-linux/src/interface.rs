@@ -341,6 +341,12 @@ impl MyMfa {
         Ok(self.d.deconnecter_drive())
     }
 
+    /// L'appareil (onglet Appareil de hyprdesk) : identité, coffre d'appareil,
+    /// liaison, trousseau des applications (sans secret), appareils du coffre.
+    async fn device(&self) -> String {
+        self.d.description_appareil().to_string()
+    }
+
     /// Lie ce coffre d'appareil au coffre partagé de Drive (son mot de passe,
     /// une fois) : chacun garde sa clé, ils fusionnent à chaque cycle (SYN-13).
     /// Rend le statut de synchro après un premier cycle.

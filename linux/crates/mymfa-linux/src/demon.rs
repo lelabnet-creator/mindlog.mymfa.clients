@@ -622,6 +622,51 @@ impl Demon {
         }
     }
 
+    /// L'appareil tel que hyprdesk le montre (onglet Appareil) : identité, coffre
+    /// d'appareil (sceau de session), liaison au coffre partagé, trousseau des
+    /// applications (sans aucun secret) et registre des appareils du coffre.
+    pub fn description_appareil(&self) -> serde_json::Value {
+        let (ouvert, cle_en_attente, secret_service, trousseau, registre) = {
+            let etat = self.etat();
+            let registre = etat
+                .coffre
+                .as_ref()
+                .map(|c| mymfa_core::sync2::registre(&c.donnees()))
+                .unwrap_or_default();
+            (etat.coffre.is_some(), etat.cle_session.is_some(), etat.secret_service, etat.trousseau.apercu(), registre)
+        };
+        let (id, connecte, lie) = {
+            let s = self.synchro();
+            (s.etat.as_ref().map(|e| e.appareil.clone()).unwrap_or_default(), s.jetons.is_some(), s.cle_partagee.is_some())
+        };
+        let appareils: Vec<serde_json::Value> = registre
+            .iter()
+            .map(|(a, vu)| {
+                serde_json::json!({
+                    "id": a,
+                    "type": vu.description.as_ref().map(|d| d.type_.clone()),
+                    "nom": vu.description.as_ref().and_then(|d| d.nom.clone()),
+                    "actifLe": vu.actif_le,
+                    "moi": *a == id,
+                })
+            })
+            .collect();
+        serde_json::json!({
+            "appareil": { "id": id, "type": "linux", "nom": nom_d_hote() },
+            "coffre": {
+                "ouvert": ouvert,
+                "scelle": self.scelle(),
+                "sansSceau": self.chemins.sans_sceau().exists(),
+                "cleEnAttente": cle_en_attente,
+                "dossier": self.chemins.donnees.display().to_string(),
+            },
+            "secretService": secret_service,
+            "synchro": { "connecte": connecte, "lie": lie },
+            "trousseau": trousseau,
+            "appareils": appareils,
+        })
+    }
+
     /// Le statut JSON rendu à hyprdesk (SyncNow, SyncStatus, fin de cycle).
     pub fn statut_synchro(&self) -> serde_json::Value {
         let s = self.synchro();
@@ -1213,6 +1258,28 @@ mod tests {
         assert!(d.chemins.trousseau().exists(), "trousseau écrit au déverrouillage");
         assert!(d.verrouiller());
         assert!(d.verrouille() && *d.verrou.borrow());
+    }
+
+    /// Device() montre le trousseau des applications (libellés, attributs) sans
+    /// jamais un secret ; verrouillé, rien que les collections et leur compte.
+    #[tokio::test]
+    async fn description_de_l_appareil_sans_secret() {
+        let d = demon("appareil");
+        d.deverrouiller(Zeroizing::new(MDP.into())).await.unwrap();
+        let mut attributs = crate::trousseau::Attributs::new();
+        attributs.insert("application".into(), "essai".into());
+        d.etat()
+            .trousseau
+            .creer_element("login", "Clé de l'essai", attributs, Zeroizing::new(b"SECRET-APP-42".to_vec()), "text/plain", false)
+            .unwrap();
+        let texte = d.description_appareil().to_string();
+        assert!(texte.contains("Clé de l'essai") && texte.contains("\"type\":\"linux\""));
+        assert!(!texte.contains("SECRET-APP-42"), "aucun secret");
+        d.verrouiller();
+        let v = d.description_appareil();
+        assert_eq!(v["trousseau"]["ouvert"], false);
+        assert_eq!(v["trousseau"]["collections"][0]["nombre"], 1);
+        assert!(!v.to_string().contains("Clé de l'essai"), "verrouillé : pas de libellé d'élément");
     }
 
     /// Coffre d'appareil (SYN-13) : lié une fois au coffre partagé par son mot

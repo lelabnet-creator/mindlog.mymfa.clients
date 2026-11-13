@@ -302,6 +302,36 @@ impl Trousseau {
 
     /* ───── Lecture ───── */
 
+    /// Ce que l'appareil montre de son trousseau (onglet Appareil) : collections
+    /// et éléments, libellés, attributs et dates — JAMAIS un secret. Verrouillé,
+    /// seuls les libellés des collections et le nombre d'éléments de l'index.
+    pub fn apercu(&self) -> serde_json::Value {
+        let collections: Vec<serde_json::Value> = match &self.contenu {
+            Some(contenu) => contenu
+                .iter()
+                .map(|(id, c)| {
+                    serde_json::json!({
+                        "id": id,
+                        "label": c.label,
+                        "elements": c.elements.iter().map(|(eid, e)| serde_json::json!({
+                            "id": eid,
+                            "label": e.label,
+                            "attributs": e.attributs,
+                            "modifie": e.modifie,
+                        })).collect::<Vec<_>>(),
+                    })
+                })
+                .collect(),
+            None => self
+                .index
+                .collections
+                .iter()
+                .map(|(id, c)| serde_json::json!({ "id": id, "label": c.label, "nombre": c.items.len() }))
+                .collect(),
+        };
+        serde_json::json!({ "ouvert": self.contenu.is_some(), "collections": collections })
+    }
+
     pub fn collections(&self) -> Vec<String> {
         self.index.collections.keys().cloned().collect()
     }
