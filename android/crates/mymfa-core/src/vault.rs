@@ -376,6 +376,41 @@ pub fn remove_passkey(record: &VaultRecord, id: &str) -> VaultRecord {
     next
 }
 
+/* ───── Coffre d'appareil lié au coffre partagé (SYN-13) ───── */
+//
+// Un appareil peut tenir son PROPRE coffre (sa DEK, son mot de passe, ouvert
+// par la session — trousseau du bureau, Credential Vault…) tout en se
+// synchronisant avec le coffre partagé de Drive (celui du web). Lier se fait
+// une fois, avec le mot de passe du coffre partagé : sa DEK — la « clé de
+// synchro » — est gardée enveloppée par la DEK de l'appareil, jamais le mot
+// de passe. À chaque cycle, Drive se déchiffre par la clé de synchro, se
+// fusionne (sync2) dans le coffre de l'appareil, et repart dans SON enveloppe
+// (mot de passe et passkeys du coffre partagé intacts) : rien ne change pour
+// le web ni l'extension. Un changement de mot de passe du coffre partagé
+// réenveloppe la même DEK : la liaison y survit.
+
+/// AAD de la clé de synchro enveloppée par la DEK de l'appareil.
+pub const AAD_CLE_SYNCHRO: &str = "mymfa:appareil:cle-synchro:v1";
+
+/// Enveloppe la clé du coffre partagé par la DEK du coffre d'appareil.
+pub fn envelopper_cle_synchro(cle: &Dek, dek_appareil: &Dek) -> Result<DataBlob> {
+    wrap_dek(cle, &dek_appareil.0, AAD_CLE_SYNCHRO)
+}
+
+/// Rouvre la clé de synchro avec la DEK du coffre d'appareil.
+pub fn ouvrir_cle_synchro(blob: &DataBlob, dek_appareil: &Dek) -> Result<Dek> {
+    unwrap_dek(&blob.iv, &blob.ct, &dek_appareil.0, AAD_CLE_SYNCHRO, "corrupted")
+}
+
+/// Le coffre partagé portant de nouvelles données : mêmes enveloppes (mot de
+/// passe, passkeys), données rechiffrées par sa propre clé.
+pub fn avec_donnees(record: &VaultRecord, cle: &Dek, data: &DataMap) -> Result<VaultRecord> {
+    let mut r = record.clone();
+    r.data = encrypt_data(cle, data)?;
+    r.v = version_pour(data);
+    Ok(r)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -389,6 +424,27 @@ mod tests {
         .into_iter()
         .map(|(k, v)| (k.into(), v.into()))
         .collect()
+    }
+
+    #[test]
+    fn coffre_d_appareil_lie_au_coffre_partage() {
+        let (partage, cle) = create("mot de passe du web", &sample_data(), FAST).unwrap();
+        let (_, dek_appareil) = create("mot de passe local", &DataMap::new(), FAST).unwrap();
+        let enveloppe = envelopper_cle_synchro(&cle, &dek_appareil).unwrap();
+        let relue = ouvrir_cle_synchro(&enveloppe, &dek_appareil).unwrap();
+        assert_eq!(decrypt_data(&relue, &partage.data).unwrap(), sample_data());
+        let (_, autre) = create("encore un autre", &DataMap::new(), FAST).unwrap();
+        assert!(ouvrir_cle_synchro(&enveloppe, &autre).is_err(), "autre appareil : illisible");
+        // Nouvelles données : enveloppes du coffre partagé intactes.
+        let mut donnees = sample_data();
+        donnees.insert("mymfa.history.v1".into(), "[1]".into());
+        let nouveau = avec_donnees(&partage, &relue, &donnees).unwrap();
+        assert_eq!(nouveau.password, partage.password);
+        let dek = unlock_with_password(&nouveau, "mot de passe du web").unwrap();
+        assert_eq!(decrypt_data(&dek, &nouveau.data).unwrap(), donnees);
+        // Mot de passe du coffre partagé changé : même DEK, liaison intacte.
+        let change = change_password(&nouveau, &dek, "nouveau mot de passe web", FAST).unwrap();
+        assert_eq!(decrypt_data(&relue, &change.data).unwrap(), donnees);
     }
 
     #[test]

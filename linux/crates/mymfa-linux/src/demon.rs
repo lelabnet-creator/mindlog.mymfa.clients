@@ -70,6 +70,10 @@ pub struct Synchro {
     pub sauvegarde: Option<SauvegardeDrive>,
     /// Jetons OAuth (mémoire ; persistés chiffrés dans mymfa-drive.json).
     pub jetons: Option<Jetons>,
+    /// Clé de synchro : DEK du coffre partagé de Drive, quand ce coffre
+    /// d'appareil y est lié (SYN-13). Mémoire, coffre ouvert seulement ;
+    /// persistée enveloppée par la DEK dans mymfa-drive-key.json.
+    pub cle_partagee: Option<mymfa_core::vault::Dek>,
     /// Heure de référence T() : horloge corrigée par la sonde NTS (SYN-08).
     pub reference: mymfa_core::temps::ReferenceTemps,
     /// Journal de synchro (persisté chiffré dans mymfa-journal.json).
@@ -88,6 +92,7 @@ impl Synchro {
             etat: Some(mymfa_core::sync2::EtatSynchro::nouvelle(appareil, chemins::maintenant() as i64)),
             sauvegarde: None,
             jetons: None,
+            cle_partagee: None,
             reference: mymfa_core::temps::ReferenceTemps::nouvelle(),
             journal: crate::synchro::Journal::default(),
             points: crate::synchro::Points::default(),
@@ -357,6 +362,16 @@ impl Demon {
                     let _ = std::fs::remove_file(self.chemins.drive_jetons());
                     s.jetons = None;
                 }
+                s.cle_partagee = None;
+                if let Some(brut) = chemins::lire(&self.chemins.drive_cle()) {
+                    match serde_json::from_str::<mymfa_core::vault::DataBlob>(&brut)
+                        .ok()
+                        .and_then(|b| mymfa_core::vault::ouvrir_cle_synchro(&b, &dek).ok())
+                    {
+                        Some(cle) => s.cle_partagee = Some(cle),
+                        None => journal!("clé de synchro illisible avec ce coffre : liaison à refaire"),
+                    }
+                }
                 let brut = chemins::lire(&self.chemins.drive_journal()).unwrap_or_default();
                 if let Ok(j) = crate::synchro::Journal::depuis_texte(&brut, &dek) {
                     s.journal = j;
@@ -379,6 +394,7 @@ impl Demon {
             etat.trousseau.fermer();
             ouvert
         };
+        self.synchro().cle_partagee = None;
         if etait_ouvert {
             journal!("coffre verrouillé");
             self.verrou.send_replace(true);
@@ -612,6 +628,7 @@ impl Demon {
         let ouvert = !self.verrouille();
         serde_json::json!({
             "connecte": s.jetons.is_some(),
+            "lie": s.cle_partagee.is_some(),
             "coffreOuvert": ouvert,
             "enCours": s.en_cours,
             "horlogeVerifiee": s.reference.verifiee(),
@@ -658,6 +675,43 @@ impl Demon {
             return self.installer_sauvegarde(enveloppe, mot_de_passe).await;
         }
         self.remplacer_par(enveloppe, mot_de_passe).await
+    }
+
+    /// Lie ce coffre d'appareil au coffre partagé de Drive (SYN-13), avec le
+    /// mot de passe de ce dernier (celui du web) : sa DEK — la clé de synchro —
+    /// est gardée enveloppée par la DEK de l'appareil, jamais le mot de passe.
+    /// Chacun garde sa clé et son mot de passe ; à chaque cycle, Drive se
+    /// fusionne ici et repart dans ses propres enveloppes. Le trousseau des
+    /// applications reste propre à l'appareil. Lance aussitôt un cycle et rend
+    /// son statut.
+    pub async fn lier_drive(self: &Partage, mot_de_passe: Zeroizing<String>) -> Result<serde_json::Value, Refus> {
+        if self.verrouille() {
+            return Err(Refus::Verrouille);
+        }
+        let enveloppe = self
+            .synchro()
+            .points
+            .sauvegardes
+            .first()
+            .map(|p| p.enveloppe.to_string())
+            .ok_or_else(|| Refus::Echec("aucune version de Drive reçue : connectez Drive et synchronisez d'abord".into()))?;
+        let record = mymfa_core::vault::parse(&enveloppe).ok_or(Refus::Coffre(ErreurCoffre::Corrompu))?;
+        let mdp = mot_de_passe.clone();
+        let cle = tokio::task::spawn_blocking(move || mymfa_core::vault::unlock_with_password(&record, &mdp))
+            .await
+            .map_err(|_| Refus::Echec("vérification interrompue".into()))?
+            .map_err(|_| Refus::Coffre(ErreurCoffre::MauvaisMotDePasse))?;
+        let dek = self.etat().coffre.as_ref().map(|c| c.dek_pleine()).ok_or(Refus::Verrouille)?;
+        if cle.0 != dek.0 {
+            let blob = mymfa_core::vault::envelopper_cle_synchro(&cle, &dek).map_err(refus_drive)?;
+            let texte = serde_json::to_string(&blob).map_err(|e| Refus::Echec(e.to_string()))?;
+            chemins::ecrire_prive(&self.chemins.drive_cle(), texte.as_bytes())
+                .map_err(|e| Refus::Echec(format!("clé de synchro non écrite : {e}")))?;
+            self.synchro().cle_partagee = Some(cle);
+            journal!("coffre d'appareil lié au coffre de Drive : fusion à chaque synchro");
+        }
+        self.cycler_synchro().await;
+        Ok(self.statut_synchro())
     }
 
     /// Remplace le coffre local, ouvert, par la version d'un AUTRE coffre (celle
@@ -737,6 +791,9 @@ impl Demon {
             s.etat = Some(etat);
             s.sauvegarde = None;
             s.statut = None;
+            // Le coffre local EST désormais le coffre partagé : plus de liaison.
+            s.cle_partagee = None;
+            let _ = std::fs::remove_file(self.chemins.drive_cle());
         }
         self.contenu.send_modify(|n| *n += 1);
         self.demande_synchro.notify_one();
@@ -783,8 +840,10 @@ impl Demon {
     /// Oublie la connexion Drive : jetons effacés (mémoire et disque).
     pub fn deconnecter_drive(&self) {
         let _ = std::fs::remove_file(self.chemins.drive_jetons());
+        let _ = std::fs::remove_file(self.chemins.drive_cle());
         let mut s = self.synchro();
         s.jetons = None;
+        s.cle_partagee = None;
         s.sauvegarde = None;
         s.statut = Some(serde_json::json!({ "etat": "deconnecte" }));
     }
@@ -828,7 +887,7 @@ impl Demon {
         for tour in 1..=3 {
             // ── Capture (verrou du coffre, puis verrou de synchro) : la copie
             // locale, le coffre chiffré, la DEK, l'état de fusion, le journal.
-            let (dek, local, mut etat, mut sauvegarde, jetons, mut reference, mut journal, mut points) = {
+            let (dek, local, mut etat, mut sauvegarde, jetons, mut reference, mut journal, mut points, cle_partagee) = {
                 let etat_demon = self.etat();
                 let Some(c) = etat_demon.coffre.as_ref() else {
                     return serde_json::json!({ "etat": "verrouille" });
@@ -846,6 +905,7 @@ impl Demon {
                     s.reference.clone(),
                     s.journal.clone(),
                     s.points.clone(),
+                    s.cle_partagee.clone(),
                 )
             };
             let Some(mut jetons) = jetons else {
@@ -881,8 +941,10 @@ impl Demon {
             }
             let maintenant = reference.maintenant(chemins::maintenant() as i64);
 
-            // ── Lire Drive et déchiffrer (une autre DEK : pas de fusion).
-            let distante = match crate::synchro::lire_distante(&transport, &jetons, &dek, &mut points).await {
+            // ── Lire Drive et déchiffrer : par la clé de synchro si ce coffre
+            // d'appareil est lié (SYN-13), sinon par la DEK du coffre.
+            let cles: Vec<&mymfa_core::vault::Dek> = cle_partagee.iter().chain(std::iter::once(&dek)).collect();
+            let distante = match crate::synchro::lire_distante(&transport, &jetons, &cles, &mut points).await {
                 Ok(d) => d,
                 Err(e) => {
                     let code = e.code.to_string();
@@ -891,7 +953,7 @@ impl Demon {
                     return serde_json::json!({ "etat": "erreur", "code": code });
                 }
             };
-            if let Some((_, sauv)) = &distante {
+            if let Some(sauv) = distante.as_ref().map(|d| &d.sauvegarde) {
                 // L'heure des serveurs Google, consignée pour le journal (la
                 // référence du web ; le démon, lui, fait NTS).
                 if !sauv.modifiee_le.is_empty() {
@@ -902,7 +964,7 @@ impl Demon {
             // ── Fusion champ par champ (SYN-07) : pure, aucune écriture.
             let vide = mymfa_core::DataMap::new();
             let (fusion, rapport) =
-                mymfa_core::sync2::fusion(&local, distante.as_ref().map(|(m, _)| m).unwrap_or(&vide), &mut etat, maintenant);
+                mymfa_core::sync2::fusion(&local, distante.as_ref().map(|d| &d.donnees).unwrap_or(&vide), &mut etat, maintenant);
 
             // ── Écrire en local si la fusion a changé quelque chose (rien
             // n'est écrit si verrouillé entre-temps : statut et fin).
@@ -926,9 +988,26 @@ impl Demon {
                 }
             }
 
-            // ── Envoyer si le résultat apporte quelque chose (le record local,
-            // rechiffré par modifier, EST la version fusionnée).
-            let record_json = {
+            // ── Envoyer si le résultat apporte quelque chose. Coffre d'appareil
+            // lié : le coffre partagé repart dans SES enveloppes, données
+            // fusionnées chiffrées par la clé de synchro. Sinon le record local,
+            // rechiffré par modifier, EST la version fusionnée.
+            let partage = match (&distante, &cle_partagee) {
+                (Some(d), Some(cle)) if d.cle == 0 => Some((d.record.clone(), cle.clone())),
+                _ => None,
+            };
+            let record_json = if let Some((record, cle)) = partage {
+                match mymfa_core::vault::avec_donnees(&record, &cle, &fusion).and_then(|r| {
+                    serde_json::to_string(&r).map_err(|_| mymfa_core::AppError::new("corrupted"))
+                }) {
+                    Ok(t) => t,
+                    Err(e) => {
+                        journal!("synchro : coffre partagé non rechiffré ({})", e.code);
+                        self.terminer_cycle(&etat, sauvegarde, jetons, reference, journal, points);
+                        return serde_json::json!({ "etat": "erreur", "code": "driveEcriture" });
+                    }
+                }
+            } else {
                 let etat_demon = self.etat();
                 match etat_demon.coffre.as_ref() {
                     Some(c) => c.texte().unwrap_or_default(),
@@ -1134,6 +1213,38 @@ mod tests {
         assert!(d.chemins.trousseau().exists(), "trousseau écrit au déverrouillage");
         assert!(d.verrouiller());
         assert!(d.verrouille() && *d.verrou.borrow());
+    }
+
+    /// Coffre d'appareil (SYN-13) : lié une fois au coffre partagé par son mot
+    /// de passe ; la clé de synchro est gardée enveloppée, quitte la mémoire au
+    /// verrouillage et revient au déverrouillage — le coffre local, lui, ne
+    /// change ni de clé ni de mot de passe.
+    #[tokio::test]
+    async fn coffre_d_appareil_lie_au_coffre_de_drive() {
+        let d = demon("lie");
+        d.deverrouiller(Zeroizing::new(MDP.into())).await.unwrap();
+        let web = "mot de passe du web";
+        let (record, cle) = vault::create(web, &Default::default(), RAPIDE).unwrap();
+        d.synchro().points.pousser(crate::synchro::PointRestauration {
+            revision: "R1".into(),
+            modifiee_le: String::new(),
+            enveloppe: Zeroizing::new(serde_json::to_string(&record).unwrap()),
+        });
+        assert!(matches!(
+            d.lier_drive(Zeroizing::new("faux".into())).await,
+            Err(Refus::Coffre(ErreurCoffre::MauvaisMotDePasse))
+        ));
+        assert!(d.synchro().cle_partagee.is_none());
+        let statut = d.lier_drive(Zeroizing::new(web.into())).await.unwrap();
+        assert_eq!(statut["lie"], true);
+        assert_eq!(d.synchro().cle_partagee.as_ref().map(|c| c.0), Some(cle.0));
+        assert!(d.chemins.drive_cle().exists());
+        d.verrouiller();
+        assert!(d.synchro().cle_partagee.is_none(), "verrouillé : la clé quitte la mémoire");
+        d.deverrouiller(Zeroizing::new(MDP.into())).await.unwrap();
+        assert_eq!(d.synchro().cle_partagee.as_ref().map(|c| c.0), Some(cle.0), "relue au déverrouillage");
+        d.deconnecter_drive();
+        assert!(d.synchro().cle_partagee.is_none() && !d.chemins.drive_cle().exists());
     }
 
     /// Drive porte un AUTRE coffre (driveAutreCoffre) : la version reçue

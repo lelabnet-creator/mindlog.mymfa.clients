@@ -226,9 +226,10 @@ est activable par le bus (premier appel = démarrage).
 | `SyncStatus()` | `() → s` | État de la synchronisation : `connecte`, `coffreOuvert`, `enCours`, `horlogeVerifiee`, `alerteHorloge`, `revision`, `modifieeLe`, dernier `statut`. |
 | `SyncJournal()` | `() → s` | Journal de synchro (chiffré côté disque par la DEK) : arrivées, départs, conflits, doublons, horloges suspectes, envois. |
 | `DriveConnect()` | `() → s` | Connecte Google Drive : ouvre le navigateur (boucle locale 127.0.0.1 + PKCE, portée `drive.appdata`), échange les jetons (conservés chiffrés par la DEK), puis lance un premier cycle. Bloque jusqu'au retour du navigateur (5 min au plus). |
-| `DriveDisconnect()` | `() → ()` | Oublie la connexion : jetons effacés. |
+| `DriveDisconnect()` | `() → ()` | Oublie la connexion : jetons et clé de synchro effacés. |
+| `LinkDrive(s password)` | `s → s` | Lie ce coffre d'appareil au coffre partagé de Drive (celui du web), avec le mot de passe de ce dernier, une fois (SYN-13) : chacun garde sa clé et son mot de passe, ils fusionnent à chaque cycle. Rend le statut après un premier cycle. |
 | `Audit()` | `() → s` | Santé des mots de passe : `{"faibles": [{id, label, niveau}], "reutilises": [{sites: [label…]}], "aRenouveler": [{id, label, change_le}]}` — ids et libellés, jamais de mot de passe. Fuites (HIBP) : côté web en attendant le port. |
-| `RestoreDrive(s revision, s password)` | `ss → ()` | Restaure une version gardée en point de restauration (les dernières versions Drive reçues, chiffrées) : le coffre est remplacé par cette version, mot de passe vérifié avant toute écriture. |
+| `RestoreDrive(s revision, s password)` | `ss → ()` | Restaure une version gardée en point de restauration (les dernières versions Drive reçues, chiffrées ; révision vide : la dernière) : le coffre est remplacé par cette version, mot de passe vérifié avant toute écriture. Un coffre local présent est gardé à côté (`mymfa-vault.avant-drive-<t>.json`) ; trousseau, jetons, journal et points sont rechiffrés par la nouvelle clé. |
 
 ### Propriétés (lecture seule, `PropertiesChanged` émis)
 
@@ -258,7 +259,7 @@ est activable par le bus (premier appel = démarrage).
 (CreateVault ou InstallVault alors qu'un coffre existe), `WeakPassword`
 (nouveau mot de passe trop court), `DriveAuth` (connexion Drive refusée ou
 jetons périmés), `DriveHttp`, `DriveUnavailable` (réseau), `DriveOtherVault`
-(la sauvegarde Drive appartient à un autre coffre : pas de fusion),
+(la sauvegarde Drive appartient à un autre coffre, pas encore lié : `LinkDrive`),
 `Failed` — chacune avec un message en français affichable.
 
 ### Synchronisation Google Drive (LIN-06, synchro v2)
@@ -280,8 +281,25 @@ chiffrés par la DEK — coffre verrouillé, plus de jeton), `mymfa-sync.json`
 (état de l'appareil : identifiant, horloge hybride, repère, révision vue —
 rien de secret), `mymfa-journal.json` (journal, chiffré), `mymfa-drive-backup.json`
 (points de restauration : les dernières versions Drive reçues, chiffrées).
-Une sauvegarde chiffrée par une autre DEK (un autre coffre) n'est jamais
-fusionnée : erreur `DriveOtherVault`, l'utilisateur décide (restaurer ou pas).
+#### Coffre d'appareil (SYN-13)
+
+Le coffre de cet ordinateur peut rester le SIEN — sa DEK, son mot de passe,
+ouvert par la session (pam_mymfa), comme le trousseau d'un bureau ou le
+Credential Vault de Windows — tout en se synchronisant avec le coffre partagé
+de Drive (celui du web). Une sauvegarde Drive d'une autre DEK donne d'abord
+`DriveOtherVault` ; `LinkDrive` (mot de passe du coffre partagé, une fois) la
+lie : la DEK du coffre partagé — la clé de synchro — est gardée enveloppée par
+la DEK de l'appareil dans `mymfa-drive-key.json` (AAD
+`mymfa:appareil:cle-synchro:v1`), jamais le mot de passe. Chaque cycle
+déchiffre alors Drive par la clé de synchro, fusionne dans le coffre de
+l'appareil, et renvoie le coffre partagé dans SES enveloppes (mot de passe,
+passkeys) avec les données fusionnées : rien ne change pour le web,
+l'extension ni Android. Un changement de mot de passe du coffre partagé
+réenveloppe la même DEK : la liaison y survit. Le trousseau des applications
+(Secret Service) reste propre à l'appareil, jamais synchronisé. Coffre
+verrouillé : la clé de synchro quitte la mémoire. Primitives dans le cœur
+(`vault::envelopper_cle_synchro`, `ouvrir_cle_synchro`, `avec_donnees`),
+pour tout client d'appareil.
 
 ### Invite de déverrouillage
 

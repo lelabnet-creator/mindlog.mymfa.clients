@@ -27,6 +27,9 @@ pub const JETONS_DRIVE: &str = "mymfa-drive.json";
 pub const ETAT_SYNCHRO: &str = "mymfa-sync.json";
 /// Journal de synchro, chiffré par la DEK.
 pub const JOURNAL_SYNCHRO: &str = "mymfa-journal.json";
+/// Clé de synchro (DEK du coffre partagé de Drive) enveloppée par la DEK du
+/// coffre d'appareil (SYN-13) : présente quand cet appareil a SON coffre.
+pub const CLE_SYNCHRO: &str = "mymfa-drive-key.json";
 /// Points de restauration : dernières versions Drive reçues, chiffrées.
 pub const POINTS_DRIVE: &str = "mymfa-drive-backup.json";
 
@@ -74,6 +77,10 @@ impl Chemins {
 
     pub fn drive_journal(&self) -> PathBuf {
         self.donnees.join(JOURNAL_SYNCHRO)
+    }
+
+    pub fn drive_cle(&self) -> PathBuf {
+        self.donnees.join(CLE_SYNCHRO)
     }
 
     pub fn drive_points(&self) -> PathBuf {

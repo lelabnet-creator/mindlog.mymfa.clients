@@ -259,16 +259,28 @@ impl Points {
 
 /* ─── Lecture distante et envoi ──────────────────────────────────────────── */
 
-/// Lit la sauvegarde Drive et la déchiffre. Renvoie None si Drive est vide.
-/// Une sauvegarde chiffrée par une autre DEK (un autre coffre) est une erreur
-/// dédiée : pas de fusion — comme le web, qui demande le mot de passe de la
-/// sauvegarde. La version reçue rejoint les points de restauration.
+/// Version lue sur Drive, déchiffrée.
+pub struct Distante {
+    pub donnees: DataMap,
+    pub sauvegarde: SauvegardeDrive,
+    /// Le coffre tel que reçu : ses enveloppes repartent avec les données
+    /// fusionnées quand il n'est pas celui de l'appareil (SYN-13).
+    pub record: mymfa_core::vault::VaultRecord,
+    /// Rang, dans `cles`, de la clé qui l'a ouvert.
+    pub cle: usize,
+}
+
+/// Lit la sauvegarde Drive et la déchiffre avec la première des `cles` qui
+/// l'ouvre (clé de synchro d'un coffre d'appareil lié, puis DEK du coffre).
+/// Renvoie None si Drive est vide. Aucune ne l'ouvre : un autre coffre, non
+/// lié — erreur dédiée (`driveAutreCoffre`), lier ou restaurer. La version
+/// reçue rejoint les points de restauration.
 pub async fn lire_distante(
     t: &impl Transport,
     jetons: &Jetons,
-    dek: &Dek,
+    cles: &[&Dek],
     points: &mut Points,
-) -> Result<Option<(DataMap, SauvegardeDrive)>, AppError> {
+) -> Result<Option<Distante>, AppError> {
     let Some(sauvegarde) = drive::trouver(t, jetons).await? else {
         return Ok(None);
     };
@@ -279,16 +291,13 @@ pub async fn lire_distante(
         enveloppe: Zeroizing::new(enveloppe.clone()),
     });
     let record = mymfa_core::vault::parse(&enveloppe).ok_or_else(|| AppError::new("invalidBackup"))?;
-    let distante = mymfa_core::vault::decrypt_data(dek, &record.data).map_err(|e| {
-        // La DEK locale n'ouvre pas la sauvegarde : un autre coffre. Pas de
-        // fusion (comme le web), l'utilisateur décidera : restaurer ou pas.
-        if e.code == "corrupted" {
-            AppError::new("driveAutreCoffre")
-        } else {
-            e
+    for (rang, cle) in cles.iter().enumerate() {
+        if let Ok(donnees) = mymfa_core::vault::decrypt_data(cle, &record.data) {
+            return Ok(Some(Distante { donnees, sauvegarde, record, cle: rang }));
         }
-    })?;
-    Ok(Some((distante, sauvegarde)))
+    }
+    // Aucune clé n'ouvre la sauvegarde : un autre coffre, pas encore lié.
+    Err(AppError::new("driveAutreCoffre"))
 }
 
 /// Résultat d'un envoi.
@@ -457,7 +466,7 @@ mod tests {
         let dek = Dek(random_bytes(32).try_into().unwrap());
         let mut points = Points::default();
         let jetons = jetons_fait();
-        let distante = lire_distante(&faux, &jetons, &dek, &mut points).await.unwrap();
+        let distante = lire_distante(&faux, &jetons, &[&dek], &mut points).await.unwrap();
         assert!(distante.is_none());
         // Drive vide : notre coffre est à envoyer.
         let (_dek, record) = dek_et_coffre(&DataMap::new());
@@ -482,7 +491,7 @@ mod tests {
         );
         let dek = Dek(random_bytes(32).try_into().unwrap());
         let mut points = Points::default();
-        let err = lire_distante(&faux, &jetons_fait(), &dek, &mut points).await.unwrap_err();
+        let err = lire_distante(&faux, &jetons_fait(), &[&dek], &mut points).await.err().unwrap();
         assert_eq!(err.code, "driveAutreCoffre");
         assert_eq!(points.sauvegardes.len(), 1, "la version reçue est gardée chiffrée");
         assert_eq!(points.sauvegardes[0].revision, "R1");
@@ -504,9 +513,11 @@ mod tests {
         );
         faux.reponses.insert(("GET".into(), "alt=media".into()), Reponse { statut: 200, corps: enveloppe });
         let mut points = Points::default();
-        let (distante, sauvegarde) = lire_distante(&faux, &jetons_fait(), &dek, &mut points).await.unwrap().unwrap();
-        assert_eq!(distante, data);
-        assert_eq!(sauvegarde.revision, "R1");
+        let autre = Dek(random_bytes(32).try_into().unwrap());
+        let d = lire_distante(&faux, &jetons_fait(), &[&autre, &dek], &mut points).await.unwrap().unwrap();
+        assert_eq!(d.donnees, data);
+        assert_eq!(d.cle, 1, "la seconde clé l'a ouvert");
+        assert_eq!(d.sauvegarde.revision, "R1");
         assert_eq!(points.sauvegardes[0].revision, "R1");
     }
 

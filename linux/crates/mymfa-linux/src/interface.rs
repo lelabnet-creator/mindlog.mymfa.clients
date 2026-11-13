@@ -341,6 +341,14 @@ impl MyMfa {
         Ok(self.d.deconnecter_drive())
     }
 
+    /// Lie ce coffre d'appareil au coffre partagé de Drive (son mot de passe,
+    /// une fois) : chacun garde sa clé, ils fusionnent à chaque cycle (SYN-13).
+    /// Rend le statut de synchro après un premier cycle.
+    async fn link_drive(&self, password: String) -> Result<String, ErreurMyMfa> {
+        let mdp = Zeroizing::new(password);
+        Ok(self.d.lier_drive(mdp).await?.to_string())
+    }
+
     /// Restaure une version gardée en point de restauration (révision Drive) :
     /// le coffre actuel est remplacé par cette version (mot de passe demandé).
     async fn restore_drive(&self, revision: String, password: String) -> Result<(), ErreurMyMfa> {
