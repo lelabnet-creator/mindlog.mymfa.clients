@@ -638,16 +638,109 @@ impl Demon {
     /// coffre remplacé puis ouvert et scellé). Le coffre actuel reste sous
     /// PREVIOUS équivalent ? Non : c'est une restauration complète, comme le web.
     pub async fn restaurer_drive(self: &Partage, revision: &str, mot_de_passe: Zeroizing<String>) -> Result<(), Refus> {
+        // Révision vide : la dernière version reçue de Drive.
         let enveloppe = {
             let s = self.synchro();
-            s.points
-                .sauvegardes
-                .iter()
-                .find(|p| p.revision == revision)
-                .map(|p| p.enveloppe.to_string())
-                .ok_or_else(|| Refus::Echec(format!("revision {revision} introuvable dans les points de restauration")))?
+            let point = if revision.is_empty() {
+                s.points.sauvegardes.first()
+            } else {
+                s.points.sauvegardes.iter().find(|p| p.revision == revision)
+            };
+            point.map(|p| p.enveloppe.to_string()).ok_or_else(|| {
+                Refus::Echec(if revision.is_empty() {
+                    "aucune version de Drive reçue : connectez Drive et synchronisez d'abord".into()
+                } else {
+                    format!("revision {revision} introuvable dans les points de restauration")
+                })
+            })?
         };
-        self.installer_sauvegarde(enveloppe, mot_de_passe).await
+        if !self.coffre_present() {
+            return self.installer_sauvegarde(enveloppe, mot_de_passe).await;
+        }
+        self.remplacer_par(enveloppe, mot_de_passe).await
+    }
+
+    /// Remplace le coffre local, ouvert, par la version d'un AUTRE coffre (celle
+    /// de Drive : `driveAutreCoffre`), ouverte par son propre mot de passe.
+    /// L'ancien coffre est gardé à côté (`mymfa-vault.avant-drive-<t>.json`),
+    /// le trousseau des applications aussi (copie) ; le trousseau en mémoire,
+    /// les jetons Drive, le journal et les points sont rechiffrés par la
+    /// nouvelle clé — rien n'est perdu ni mis de côté. L'état de fusion
+    /// repart de zéro (même appareil) ; le sceau de session, périmé, se refait
+    /// au prochain déverrouillage manuel.
+    async fn remplacer_par(self: &Partage, texte: String, mot_de_passe: Zeroizing<String>) -> Result<(), Refus> {
+        if self.verrouille() {
+            return Err(Refus::Verrouille);
+        }
+        let record = mymfa_core::vault::parse(&texte).ok_or(Refus::Coffre(ErreurCoffre::Corrompu))?;
+        let mdp = mot_de_passe.clone();
+        let (record, dek) = tokio::task::spawn_blocking(move || {
+            mymfa_core::vault::unlock_with_password(&record, &mdp).map(|dek| (record, dek))
+        })
+        .await
+        .map_err(|_| Refus::Echec("vérification interrompue".into()))?
+        .map_err(|_| Refus::Coffre(ErreurCoffre::MauvaisMotDePasse))?;
+        let instant = chemins::maintenant();
+        let chemin = self.chemins.coffre();
+        let copie = chemin.with_extension(format!("avant-drive-{instant}.json"));
+        let texte_neuf = serde_json::to_string(&record).map_err(|e| Refus::Echec(e.to_string()))?;
+        {
+            // Verrou d'état tenu de l'écriture à l'échange : la surveillance du
+            // disque ne voit jamais le nouveau fichier avec l'ancienne clé.
+            let mut etat = self.etat();
+            if etat.coffre.is_none() {
+                return Err(Refus::Verrouille);
+            }
+            std::fs::rename(&chemin, &copie).map_err(|e| Refus::Echec(format!("ancien coffre non mis de côté : {e}")))?;
+            let trousseau = self.chemins.trousseau();
+            if trousseau.exists() {
+                let _ = std::fs::copy(&trousseau, trousseau.with_extension(format!("avant-drive-{instant}.json")));
+            }
+            if let Err(e) = chemins::ecrire_prive(&chemin, texte_neuf.as_bytes()) {
+                let _ = std::fs::rename(&copie, &chemin);
+                return Err(Refus::Echec(format!("coffre de Drive non écrit : {e}")));
+            }
+            let ouvert = match coffre::ouvrir_avec(dek, &record, chemins::modification(&chemin)) {
+                Ok(o) => o,
+                Err(e) => {
+                    let _ = std::fs::rename(&copie, &chemin);
+                    return Err(e.into());
+                }
+            };
+            journal!(
+                "coffre local remplacé par la version de Drive ({} comptes, {} logins) ; l'ancien est gardé : {}",
+                ouvert.comptes.len(),
+                ouvert.logins.len(),
+                copie.display()
+            );
+            etat.coffre = Some(ouvert);
+        }
+        // Trousseau des applications : toujours ouvert en mémoire, réécrit avec la nouvelle clé.
+        self.persister();
+        let dek = self.etat().coffre.as_ref().map(|c| c.dek_pleine()).ok_or(Refus::Verrouille)?;
+        {
+            let mut s = self.synchro();
+            if let Some(j) = &s.jetons {
+                if let Ok(t) = crate::drive::jetons_en_texte(j, &dek) {
+                    let _ = chemins::ecrire_prive(&self.chemins.drive_jetons(), t.as_bytes());
+                }
+            }
+            if let Ok(t) = s.journal.en_texte(&dek) {
+                let _ = chemins::ecrire_prive(&self.chemins.drive_journal(), t.as_bytes());
+            }
+            if let Ok(t) = s.points.en_texte(&dek) {
+                let _ = chemins::ecrire_prive(&self.chemins.drive_points(), t.as_bytes());
+            }
+            let appareil = s.etat.as_ref().map(|e| e.appareil.clone()).unwrap_or_else(|| "mymfa".into());
+            let etat = mymfa_core::sync2::EtatSynchro::nouvelle(&appareil, instant as i64).avec_description("linux", nom_d_hote());
+            let _ = chemins::ecrire_prive(&self.chemins.drive_etat(), crate::synchro::etat_en_texte(&etat, None).as_bytes());
+            s.etat = Some(etat);
+            s.sauvegarde = None;
+            s.statut = None;
+        }
+        self.contenu.send_modify(|n| *n += 1);
+        self.demande_synchro.notify_one();
+        Ok(())
     }
 
     /// Connecte Drive : boucle locale + PKCE, navigateur ouvert, jetons échangés
@@ -1041,6 +1134,50 @@ mod tests {
         assert!(d.chemins.trousseau().exists(), "trousseau écrit au déverrouillage");
         assert!(d.verrouiller());
         assert!(d.verrouille() && *d.verrou.borrow());
+    }
+
+    /// Drive porte un AUTRE coffre (driveAutreCoffre) : la version reçue
+    /// remplace le coffre local, ouverte par son propre mot de passe ; les
+    /// secrets des applications survivent (rechiffrés), l'ancien coffre reste à côté.
+    #[tokio::test]
+    async fn coffre_local_remplace_par_celui_de_drive() {
+        let d = demon("remplace");
+        d.deverrouiller(Zeroizing::new(MDP.into())).await.unwrap();
+        let mut attributs = crate::trousseau::Attributs::new();
+        attributs.insert("application".into(), "essai".into());
+        d.etat()
+            .trousseau
+            .creer_element("login", "Essai", attributs.clone(), Zeroizing::new(b"secret-app".to_vec()), "text/plain", false)
+            .unwrap();
+        d.persister();
+        let autre = "mot de passe du web";
+        let (record, _) = vault::create(autre, &Default::default(), RAPIDE).unwrap();
+        d.synchro().points.pousser(crate::synchro::PointRestauration {
+            revision: "R1".into(),
+            modifiee_le: String::new(),
+            enveloppe: Zeroizing::new(serde_json::to_string(&record).unwrap()),
+        });
+        assert!(
+            matches!(
+                d.restaurer_drive("", Zeroizing::new("faux".into())).await,
+                Err(Refus::Coffre(ErreurCoffre::MauvaisMotDePasse))
+            ),
+            "mauvais mot de passe : rien ne change"
+        );
+        d.restaurer_drive("", Zeroizing::new(autre.into())).await.unwrap();
+        assert!(!d.verrouille());
+        let copies = std::fs::read_dir(&d.chemins.donnees)
+            .unwrap()
+            .filter_map(|e| e.ok())
+            .filter(|e| e.file_name().to_string_lossy().contains("avant-drive"))
+            .count();
+        assert_eq!(copies, 2, "ancien coffre et trousseau gardés");
+        // Le nouveau coffre s'ouvre avec le mot de passe du web, et le
+        // trousseau, rechiffré, avec lui.
+        d.verrouiller();
+        assert!(d.deverrouiller(Zeroizing::new(MDP.into())).await.is_err());
+        d.deverrouiller(Zeroizing::new(autre.into())).await.unwrap();
+        assert_eq!(d.etat().trousseau.rechercher(None, &attributs).len(), 1, "secret d'application conservé");
     }
 
     /// Parcours complet : connexion (remise) → déverrouillage manuel (sceau
