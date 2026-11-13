@@ -35,6 +35,14 @@ for f in today.mindlog.MyMfa1.service org.freedesktop.secrets.service; do
   sed "s|@MYMFA@|$BIN/mymfa|" "$LINUX/dbus/$f" > "$SERVICES/$f"
 done
 systemctl --user daemon-reload
+# Le bus de session ne voit pas toujours ces fichiers : dbus-broker ne surveille
+# pas ses dossiers d'activation, et un dossier créé après le lancement du bus
+# n'est suivi par personne. Sans relecture, le premier appel répond
+# ServiceUnknown — c'est le cas d'une première installation.
+busctl --user call org.freedesktop.DBus /org/freedesktop/DBus org.freedesktop.DBus ReloadConfig >/dev/null 2>&1 \
+  || dbus-send --session --type=method_call --dest=org.freedesktop.DBus \
+       /org/freedesktop/DBus org.freedesktop.DBus.ReloadConfig >/dev/null 2>&1 \
+  || echo "   (configuration du bus non relue : l'activation attendra la prochaine session)"
 echo "   $BIN/mymfa, $UNITS/mymfa.service, $SERVICES/{today.mindlog.MyMfa1,org.freedesktop.secrets}.service"
 
 echo "== démon"
@@ -50,17 +58,31 @@ elif pgrep -u "$(id -u)" -x mymfa >/dev/null; then
   pkill -TERM -u "$(id -u)" -x mymfa || true
   echo "   ancien démon arrêté (relancé à la demande, par le bus)"
 else
-  echo "   pas en service (démarré à la demande, par le bus)"
+  # Démarré par l'unit plutôt qu'attendu du bus : la même chose que
+  # l'activation (SystemdService=mymfa.service), sans dépendre de ce que le bus
+  # a relu. Type=dbus : la commande rend la main quand le nom est pris.
+  if timeout 20 systemctl --user start mymfa.service 2>/dev/null; then
+    echo "   démarré (ensuite à la demande, par le bus)"
+  else
+    echo "   pas démarré par l'unit : l'activation par le bus prend le relais"
+  fi
 fi
 # Contrôle : le démon répond, et il a démarré après l'installation du binaire
 # (/proc/PID/exe est illisible : le démon se déclare non inspectable).
 OK=
+ERREUR=
 for _ in 1 2 3 4 5 6 7 8 9 10; do
-  if "$BIN/mymfa" status >/dev/null 2>&1; then OK=1; break; fi
+  if ERREUR=$("$BIN/mymfa" status 2>&1 >/dev/null); then OK=1; break; fi
   sleep 0.5
 done
 if [[ -z "$OK" ]]; then
-  echo "!! le démon ne répond pas : journalctl --user -u mymfa -n 50" >&2
+  # De quoi comprendre sans retourner sur la machine : la réponse de mymfa,
+  # l'état de l'unit et les dernières lignes de son journal.
+  echo "!! le démon ne répond pas${ERREUR:+ : $ERREUR}" >&2
+  echo "   Secret Service tenu par : ${AVANT:-personne}" >&2
+  systemctl --user --no-pager --lines=0 status mymfa.service 2>&1 | sed 's/^/   /' >&2 || true
+  journalctl --user -u mymfa.service -n 20 --no-pager -o cat 2>&1 | sed 's/^/   | /' >&2 || true
+  echo "   plus : journalctl --user -u mymfa -n 50" >&2
   exit 1
 fi
 PID=$(pgrep -u "$(id -u)" -x mymfa | head -1 || true)
