@@ -28,6 +28,43 @@ pub const AAD_JETONS: &str = "mymfa:linux:drive:v1";
 /// Identifiant client OAuth « Application de bureau » du projet Google Cloud
 /// de myMFA (distinct de l'identifiant du client web).
 pub const ID_CLIENT: &str = "399049616505-ct9hd12gpivd4feht1811dk8st78lb15.apps.googleusercontent.com";
+/// Secret client OAuth « Application de bureau ». Google l'exige à l'échange du
+/// code et au rafraîchissement, même avec PKCE (« client_secret is missing ») ;
+/// il le documente comme non confidentiel pour une application installée.
+/// Absent du dépôt : lu dans `$XDG_CONFIG_HOME/mymfa/drive-client-secret`,
+/// sinon pris à la compilation (`MYMFA_DRIVE_CLIENT_SECRET`).
+pub fn secret_client() -> Option<String> {
+    std::fs::read_to_string(fichier_secret_client())
+        .ok()
+        .map(|t| t.trim().to_string())
+        .filter(|t| !t.is_empty())
+        .or_else(|| option_env!("MYMFA_DRIVE_CLIENT_SECRET").map(str::to_string).filter(|t| !t.is_empty()))
+}
+
+/// Fichier du secret client (voir `secret_client`).
+pub fn fichier_secret_client() -> std::path::PathBuf {
+    let base = std::env::var_os("XDG_CONFIG_HOME").map(std::path::PathBuf::from).unwrap_or_else(|| {
+        std::env::var_os("HOME").map(std::path::PathBuf::from).unwrap_or_else(|| ".".into()).join(".config")
+    });
+    base.join("mymfa").join("drive-client-secret")
+}
+
+fn champ_secret(secret: Option<&str>) -> String {
+    secret.map(|s| format!("&client_secret={}", url_encoder(s))).unwrap_or_default()
+}
+
+/// Refus de Google consigné au journal (sans le corps entier) : `error` et
+/// `error_description` disent la cause (client_secret manquant, code expiré…).
+fn journaliser_refus(etape: &str, r: &Reponse) {
+    let v: serde_json::Value = serde_json::from_str(&r.corps).unwrap_or_default();
+    eprintln!(
+        "mymfa: {etape} : Google répond {} ({} : {})",
+        r.statut,
+        v["error"].as_str().unwrap_or("?"),
+        v["error_description"].as_str().unwrap_or("")
+    );
+}
+
 /// Portée réservée au dossier caché de l'app : Drive ne voit que ses propres fichiers.
 pub const PORTEE: &str = "https://www.googleapis.com/auth/drive.appdata";
 pub const FICHIER: &str = "mymfa-vault.json";
@@ -207,14 +244,16 @@ pub const PAGE_RETOUR: &str = "<!doctype html><meta charset=utf-8><title>myMFA</
 
 /// Échange le code d'autorisation contre les jetons (PKCE : le vérificateur
 /// prouve que c'est bien nous qui avons lancé la connexion).
-pub async fn echanger_code(t: &impl Transport, code: &str, verifier: &str, port: u16) -> Result<Jetons, AppError> {
+pub async fn echanger_code(t: &impl Transport, code: &str, verifier: &str, port: u16, secret: Option<&str>) -> Result<Jetons, AppError> {
     let corps = format!(
-        "code={}&client_id={ID_CLIENT}&code_verifier={}&grant_type=authorization_code&redirect_uri=http%3A%2F%2F127.0.0.1%3A{port}",
+        "code={}&client_id={ID_CLIENT}&code_verifier={}&grant_type=authorization_code&redirect_uri=http%3A%2F%2F127.0.0.1%3A{port}{}",
         url_encoder(code),
-        url_encoder(verifier)
+        url_encoder(verifier),
+        champ_secret(secret)
     );
     let reponse = t.envoyer("", "POST", JETON_URL, Some(("application/x-www-form-urlencoded", corps))).await?;
     if reponse.statut != 200 {
+        journaliser_refus("échange du code Drive", &reponse);
         return Err(AppError::new("driveAuth"));
     }
     jetons_de_reponse(&reponse.corps)
@@ -222,13 +261,15 @@ pub async fn echanger_code(t: &impl Transport, code: &str, verifier: &str, port:
 
 /// Rafraîchit le jeton d'accès (Google renvoie parfois un nouveau jeton de
 /// rafraîchissement : on le garde, sinon l'ancien reste valable).
-pub async fn rafraichir(t: &impl Transport, ancien: &Jetons) -> Result<Jetons, AppError> {
+pub async fn rafraichir(t: &impl Transport, ancien: &Jetons, secret: Option<&str>) -> Result<Jetons, AppError> {
     let corps = format!(
-        "client_id={ID_CLIENT}&refresh_token={}&grant_type=refresh_token",
-        url_encoder(&ancien.rafraichissement)
+        "client_id={ID_CLIENT}&refresh_token={}&grant_type=refresh_token{}",
+        url_encoder(&ancien.rafraichissement),
+        champ_secret(secret)
     );
     let reponse = t.envoyer("", "POST", JETON_URL, Some(("application/x-www-form-urlencoded", corps))).await?;
     if reponse.statut != 200 {
+        journaliser_refus("rafraîchissement Drive", &reponse);
         return Err(AppError::new("driveAuth"));
     }
     #[derive(Deserialize)]
@@ -588,7 +629,7 @@ mod tests {
         let corps = r#"{"access_token":"ACC","expires_in":3600,"refresh_token":"REF"}"#;
         let faux = Faux::avec("POST", JETON_URL, 200, corps);
         let pkce = Pkce::nouveau();
-        let jetons = echanger_code(&faux, "CODE-123", &pkce.verifier, 45_123).await.unwrap();
+        let jetons = echanger_code(&faux, "CODE-123", &pkce.verifier, 45_123, Some("SECRET-1")).await.unwrap();
         assert_eq!(jetons.acces.as_str(), "ACC");
         assert_eq!(jetons.rafraichissement.as_str(), "REF");
         {
@@ -600,10 +641,16 @@ mod tests {
         }
     }
 
+    #[test]
+    fn le_secret_client_part_seulement_s_il_existe() {
+        assert_eq!(champ_secret(Some("GO+CS/1")), "&client_secret=GO%2BCS%2F1");
+        assert_eq!(champ_secret(None), "");
+    }
+
     #[tokio::test]
     async fn echanger_code_refuse_une_erreur_google() {
         let faux = Faux::avec("POST", JETON_URL, 400, r#"{"error":"invalid_grant"}"#);
-        assert!(echanger_code(&faux, "x", "y", 1).await.is_err());
+        assert!(echanger_code(&faux, "x", "y", 1, None).await.is_err());
     }
 
     #[tokio::test]
@@ -611,7 +658,7 @@ mod tests {
         let corps = r#"{"access_token":"NouvelAcces","expires_in":1800}"#;
         let faux = Faux::avec("POST", JETON_URL, 200, corps);
         let ancien = jetons_fait();
-        let nouveau = rafraichir(&faux, &ancien).await.unwrap();
+        let nouveau = rafraichir(&faux, &ancien, None).await.unwrap();
         assert_eq!(nouveau.acces.as_str(), "NouvelAcces");
         assert_eq!(nouveau.rafraichissement, ancien.rafraichissement);
     }

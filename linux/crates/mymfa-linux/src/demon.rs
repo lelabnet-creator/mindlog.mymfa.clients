@@ -586,6 +586,26 @@ impl Demon {
         self.synchro.lock().unwrap_or_else(|e| e.into_inner())
     }
 
+    /// Sonde NTS hors cycle Drive (SYN-08) : l'heure de référence est vérifiée
+    /// même sans Drive connecté — le cycle, lui, ne tourne qu'avec Drive.
+    /// Rend `true` si la mesure a abouti.
+    pub async fn sonder_horloge(&self) -> bool {
+        let mut reference = self.synchro().reference.clone();
+        match mymfa_core::temps::sonde::synchroniser(&mut reference, None).await {
+            Ok(m) => {
+                if m.alerte {
+                    journal!("temps : horloge locale décalée de {} s (corrigée)", m.decalage_ms / 1000);
+                }
+                self.synchro().reference = reference;
+                true
+            }
+            Err(_) => {
+                journal!("temps : sonde NTS injoignable, horloge non vérifiée");
+                false
+            }
+        }
+    }
+
     /// Le statut JSON rendu à hyprdesk (SyncNow, SyncStatus, fin de cycle).
     pub fn statut_synchro(&self) -> serde_json::Value {
         let s = self.synchro();
@@ -636,6 +656,14 @@ impl Demon {
         if self.verrouille() {
             return Err(Refus::Verrouille);
         }
+        // Sans secret client, Google refuserait l'échange du code après la
+        // connexion dans le navigateur : refus avant, et la marche à suivre.
+        let Some(secret) = crate::drive::secret_client() else {
+            return Err(Refus::Echec(format!(
+                "Connexion Google Drive impossible : secret client OAuth absent. Posez celui du client « Application de bureau » de myMFA (console Google Cloud) dans {}, puis réessayez.",
+                crate::drive::fichier_secret_client().display()
+            )));
+        };
         let pkce = Pkce::nouveau();
         let etat_cs = crate::drive::b64url(&mymfa_core::vault::random_bytes(16));
         let ecouteur = tokio::net::TcpListener::bind("127.0.0.1:0")
@@ -651,7 +679,7 @@ impl Demon {
         let code = crate::drive::attendre_code(ecouteur, &etat_cs, std::time::Duration::from_secs(5 * 60))
             .await
             .map_err(|_| Refus::Echec("connexion Drive interrompue ou refusée".into()))?;
-        let jetons = crate::drive::echanger_code(&crate::drive::transport_reel(), &code, &pkce.verifier, port)
+        let jetons = crate::drive::echanger_code(&crate::drive::transport_reel(), &code, &pkce.verifier, port, Some(&secret))
             .await
             .map_err(refus_drive)?;
         self.poser_jetons(jetons).await?;
@@ -735,7 +763,7 @@ impl Demon {
             // de rafraîchissement, lui, vit des années).
             let seconde = chemins::maintenant();
             if jetons.acces_expire_le <= seconde {
-                match crate::drive::rafraichir(&transport, &jetons).await {
+                match crate::drive::rafraichir(&transport, &jetons, crate::drive::secret_client().as_deref()).await {
                     Ok(renouveles) => {
                         jetons = renouveles;
                         if let Some(dek) = self.etat().coffre.as_ref().map(|c| c.dek_pleine()) {

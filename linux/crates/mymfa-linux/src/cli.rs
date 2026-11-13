@@ -178,6 +178,17 @@ async fn demon() -> Result<(), String> {
             }
         });
     }
+    // Heure de référence (SYN-08) : sondée au démarrage puis toutes les heures,
+    // Drive connecté ou non ; nouvel essai sous 5 min si la sonde échoue.
+    {
+        let d = d.clone();
+        tokio::spawn(async move {
+            loop {
+                let pause = if d.sonder_horloge().await { 3600 } else { 300 };
+                tokio::time::sleep(std::time::Duration::from_secs(pause)).await;
+            }
+        });
+    }
     // Remises PAM et coffre remplacé : une passe par seconde (un stat).
     {
         let d = d.clone();
